@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5" />
+      <stop offset="100%" stop-color="#312e81" />
+    </linearGradient>
+    <linearGradient id="glow-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8" />
+      <stop offset="100%" stop-color="#c084fc" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background Rounded Canvas -->
+  <rect width="512" height="512" rx="128" fill="url(#bg-grad)" />
+  
+  <!-- Inner Subtle Border -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="4" />
+  
+  <!-- House / Room Outline Combined with Split / Sharing Circles -->
+  <path d="M 256 100 L 110 220 L 140 220 L 140 400 L 372 400 L 372 220 L 402 220 Z" 
+        fill="none" 
+        stroke="url(#glow-grad)" 
+        stroke-width="24" 
+        stroke-linecap="round" 
+        stroke-linejoin="round" />
+        
+  <!-- Floating Coin / Currency & Mess Bowl Center Icon -->
+  <circle cx="256" cy="270" r="54" fill="#6366f1" stroke="#ffffff" stroke-width="12" />
+  
+  <!-- Equal / Split Symbol inside circle -->
+  <path d="M 230 255 L 282 255 M 230 285 L 282 285" stroke="#ffffff" stroke-width="10" stroke-linecap="round" />
+  
+  <!-- Roommate Node Dots -->
+  <circle cx="190" cy="350" r="14" fill="#a5b4fc" />
+  <circle cx="256" cy="350" r="14" fill="#a5b4fc" />
+  <circle cx="322" cy="350" r="14" fill="#a5b4fc" />
+  
+  <!-- Badge text -->
+  <text x="256" y="460" 
+        font-family="system-ui, -apple-system, sans-serif" 
+        font-size="34" 
+        font-weight="800" 
+        fill="#e0e7ff" 
+        letter-spacing="4" 
+        text-anchor="middle">ROOMEX</text>
+</svg>

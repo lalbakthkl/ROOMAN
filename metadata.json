@@ -1,0 +1,6 @@
+{
+  "name": "ROOMEX Expense Manager",
+  "description": "Smart mess and room expense sharing and management application for roommates with admin delegation and Supabase integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
