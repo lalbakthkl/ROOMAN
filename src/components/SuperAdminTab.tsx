@@ -32,17 +32,25 @@ import {
   Sun,
   Clock,
   Sparkle,
-  Trash2
+  Trash2,
+  Home,
+  CheckCircle2,
+  PlusCircle
 } from 'lucide-react';
-import { Member, Role, MemberPermissions, AuditLog, MembershipType, RoomSettings } from '../types';
+import { Member, Role, MemberPermissions, AuditLog, MembershipType, RoomSettings, Expense } from '../types';
 import { DEFAULT_PERMISSIONS } from '../lib/storage';
 import { ConfirmDialog } from './ConfirmDialog';
+import { AdminExpensesManager } from './AdminExpensesManager';
 
 interface SuperAdminTabProps {
   members: Member[];
   activeMember: Member;
   settings: RoomSettings;
   auditLogs: AuditLog[];
+  expenses?: Expense[];
+  onSaveExpense?: (expense: Expense) => void;
+  onDeleteExpense?: (expenseId: string) => void;
+  onOpenAddExpenseModal?: () => void;
   onUpdateMemberRole: (targetMemberId: string, newRole: Role, updatedPermissions?: MemberPermissions) => void;
   onAddNewMember: (
     name: string, 
@@ -60,6 +68,8 @@ interface SuperAdminTabProps {
   onUpdateSettings?: (settings: RoomSettings) => void;
   onUpdateMemberDaysStayed?: (memberId: string, days: number) => void;
   onUpdateMemberMembershipType?: (memberId: string, type: MembershipType) => void;
+  onUpdateMemberCustomRent?: (memberId: string, customRent: number | undefined) => void;
+  onUpdatePresetRent?: (presetActive: boolean, amount: number, type: 'total_room' | 'per_member') => void;
   onUpdateMemberParticipation?: (
     memberId: string, 
     params: {
@@ -81,6 +91,10 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
   activeMember,
   settings,
   auditLogs,
+  expenses = [],
+  onSaveExpense,
+  onDeleteExpense,
+  onOpenAddExpenseModal,
   onUpdateMemberRole,
   onAddNewMember,
   onRemoveMember,
@@ -88,15 +102,32 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
   onUpdateSettings,
   onUpdateMemberDaysStayed,
   onUpdateMemberMembershipType,
+  onUpdateMemberCustomRent,
+  onUpdatePresetRent,
   onUpdateMemberParticipation,
   onBulkUpdateParticipation,
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'members' | 'vacation' | 'add_member' | 'audit'>('members');
+  const [activeSubTab, setActiveSubTab] = useState<'members' | 'add_expense' | 'rent' | 'vacation' | 'add_member' | 'audit'>('members');
   const [selectedMemberForPerms, setSelectedMemberForPerms] = useState<string | null>(null);
   const [transferOwnerModal, setTransferOwnerModal] = useState<Member | null>(null);
   const [copiedMemberId, setCopiedMemberId] = useState<string | null>(null);
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
   
+  // Rent Management State
+  const [presetRentActive, setPresetRentActive] = useState<boolean>(settings.presetRentActive ?? false);
+  const [presetRentAmount, setPresetRentAmount] = useState<string>(String(settings.presetRentAmount || ''));
+  const [presetRentType, setPresetRentType] = useState<'total_room' | 'per_member'>(settings.presetRentType || 'total_room');
+  const [customRents, setCustomRents] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    members.forEach(m => {
+      if (m.customRentShare !== undefined && m.customRentShare > 0) {
+        init[m.id] = String(m.customRentShare);
+      }
+    });
+    return init;
+  });
+  const [rentSavedToast, setRentSavedToast] = useState(false);
+
   // Vacation / Participation Modal State
   const [vacationModalMember, setVacationModalMember] = useState<Member | null>(null);
   const [vacationType, setVacationType] = useState<'vacation' | 'long_leave' | 'inactive' | 'active'>('vacation');
@@ -205,15 +236,18 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
   const handleShareCredentialsWhatsApp = (m: Member) => {
     const uName = m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, '');
     const pass = m.allocatedPassword || m.password || 'password123';
-    const text = `🏠 *ROOMEX Credentials for ${settings.name}*\n\nHi ${m.name}!\nHere are your login details:\n• *Room Code:* ${settings.roomCode}\n• *Username:* ${uName}\n• *Password:* ${pass}\n• *Role:* ${m.role.toUpperCase().replace('_', ' ')}\n\nLogin at: https://roomex.app`;
-    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+    const appUrl = typeof window !== 'undefined' ? window.location.origin : 'https://roomex.app';
+    const text = `🏠 *ROOMEX APP - ROOMMATE LOGIN DETAILS*\n━━━━━━━━━━━━━━━━━━━━\nFlat / Room: *${settings.name}*\n📍 *Room Code:* ${settings.roomCode}\n👤 *Username:* ${uName}\n🔑 *Password:* ${pass}\n👑 *Role:* ${m.role.toUpperCase().replace('_', ' ')}\n\n👉 *Login from any device:*\n${appUrl}\n\n1. Open link above\n2. Select "Member Log In"\n3. Enter Room Code (${settings.roomCode}), Username & Password\n━━━━━━━━━━━━━━━━━━━━`;
+    const phoneParam = m.phone ? `&phone=${encodeURIComponent(m.phone.replace(/[^0-9+]/g, ''))}` : '';
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}${phoneParam}`;
     window.open(url, '_blank');
   };
 
   const handleCopyCredentials = (m: Member) => {
     const uName = m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, '');
     const pass = m.allocatedPassword || m.password || 'password123';
-    const text = `Room: ${settings.name} (${settings.roomCode})\nUsername: ${uName}\nPassword: ${pass}`;
+    const appUrl = typeof window !== 'undefined' ? window.location.origin : 'https://roomex.app';
+    const text = `🏠 ROOMEX LOGIN CREDENTIALS\nRoom Code: ${settings.roomCode}\nUsername: ${uName}\nPassword: ${pass}\nApp URL: ${appUrl}`;
     navigator.clipboard.writeText(text);
     setCopiedMemberId(m.id);
     setTimeout(() => setCopiedMemberId(null), 2000);
@@ -314,6 +348,30 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
           </button>
 
           <button
+            onClick={() => setActiveSubTab('add_expense')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+              activeSubTab === 'add_expense'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <PlusCircle className="w-3.5 h-3.5" />
+            <span>+ Add Rent & Expenses</span>
+          </button>
+
+          <button
+            onClick={() => setActiveSubTab('rent')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+              activeSubTab === 'rent'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Home className="w-3.5 h-3.5" />
+            <span>Rent & Custom Splits</span>
+          </button>
+
+          <button
             onClick={() => setActiveSubTab('vacation')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
               activeSubTab === 'vacation'
@@ -350,6 +408,272 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
           </button>
         </div>
       </div>
+
+      {/* SUB-TAB: ADD RENT & EXPENSES MANAGER */}
+      {activeSubTab === 'add_expense' && (
+        <AdminExpensesManager
+          members={members}
+          activeMember={activeMember}
+          settings={settings}
+          expenses={expenses}
+          onSaveExpense={onSaveExpense || (() => {})}
+          onDeleteExpense={onDeleteExpense || (() => {})}
+          onOpenAddExpenseModal={onOpenAddExpenseModal}
+          onUpdateSettings={onUpdateSettings}
+          onUpdatePresetRent={onUpdatePresetRent}
+          onUpdateMemberCustomRent={onUpdateMemberCustomRent}
+        />
+      )}
+
+      {/* SUB-TAB: RENT & CUSTOM SPLITS MANAGEMENT */}
+      {activeSubTab === 'rent' && (
+        <div className="space-y-4 font-sans">
+          
+          {/* Header Banner */}
+          <div className="p-4 bg-gradient-to-r from-emerald-950/40 via-slate-900 to-indigo-950/40 border border-emerald-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Home className="w-4 h-4 text-emerald-400" />
+                Monthly Rent & Roommate Split Engine
+              </h3>
+              <p className="text-xs text-slate-400">
+                Preset rent is added into each member's monthly payable dues & net settle balances. Rent is equal by default or can be manually customized per roommate.
+              </p>
+            </div>
+
+            <button
+              onClick={() => {
+                const amtNum = parseFloat(presetRentAmount) || 0;
+                if (onUpdatePresetRent) {
+                  onUpdatePresetRent(presetRentActive, amtNum, presetRentType);
+                }
+                if (onUpdateSettings) {
+                  onUpdateSettings({
+                    ...settings,
+                    presetRentActive,
+                    presetRentAmount: amtNum,
+                    presetRentType,
+                  });
+                }
+                if (onUpdateMemberCustomRent) {
+                  members.forEach(m => {
+                    const customVal = customRents[m.id] ? parseFloat(customRents[m.id]) : undefined;
+                    onUpdateMemberCustomRent(m.id, customVal && customVal > 0 ? customVal : undefined);
+                  });
+                }
+                setRentSavedToast(true);
+                setTimeout(() => setRentSavedToast(false), 2500);
+              }}
+              className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black transition-all flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 cursor-pointer self-start sm:self-auto"
+            >
+              <Check className="w-4 h-4" />
+              <span>Save & Apply Rent</span>
+            </button>
+          </div>
+
+          {rentSavedToast && (
+            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs font-bold flex items-center gap-2 animate-in fade-in">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Rent rules successfully saved and updated across all roommates' payable accounts!</span>
+            </div>
+          )}
+
+          {/* Preset Rent Settings Card */}
+          <div className="p-5 bg-slate-900/90 border border-white/10 rounded-2xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="presetRentActiveToggle"
+                  checked={presetRentActive}
+                  onChange={(e) => setPresetRentActive(e.target.checked)}
+                  className="w-4 h-4 rounded text-emerald-500 focus:ring-emerald-500 bg-slate-800 border-white/20 cursor-pointer"
+                />
+                <label htmlFor="presetRentActiveToggle" className="cursor-pointer">
+                  <span className="text-sm font-bold text-white block">Enable Monthly Preset Rent</span>
+                  <span className="text-xs text-slate-400">Automatically adds rent share to members' monthly payable amount</span>
+                </label>
+              </div>
+
+              {presetRentActive && (
+                <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold self-start sm:self-auto">
+                  Rent Active in Payable Calculations
+                </span>
+              )}
+            </div>
+
+            {presetRentActive && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-1">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Preset Rent Amount ({settings.currencySymbol})</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2.5 text-slate-500 font-bold text-sm">{settings.currencySymbol}</span>
+                    <input
+                      type="number"
+                      value={presetRentAmount}
+                      onChange={(e) => setPresetRentAmount(e.target.value)}
+                      placeholder="e.g. 16000"
+                      className="w-full pl-8 pr-3 py-2 bg-slate-950/80 border border-white/10 rounded-xl text-sm font-bold text-white placeholder-slate-600 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-300">Split Mode</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPresetRentType('total_room')}
+                      className={`flex-1 py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                        presetRentType === 'total_room'
+                          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 shadow-md'
+                          : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Total Flat Rent (Equal Split)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPresetRentType('per_member')}
+                      className={`flex-1 py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                        presetRentType === 'per_member'
+                          ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 shadow-md'
+                          : 'bg-white/5 border-white/10 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Fixed Per Roommate
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-950/60 border border-white/5 flex flex-col justify-center space-y-1">
+                  <span className="text-[11px] text-slate-400">Total Rent-Eligible Roommates:</span>
+                  <span className="text-sm font-extrabold text-white">
+                    {members.filter(m => m.membershipType !== 'mess_only').length} of {members.length} members
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Roommates Rent Allocation Roster */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+              <span className="font-bold text-slate-300 uppercase tracking-wider text-[11px]">Roommate Rent Allocation & Custom Overrides</span>
+              <span>Default is equal; enter amount to manually override</span>
+            </div>
+
+            <div className="space-y-2">
+              {members.map((member) => {
+                const isMessOnly = member.membershipType === 'mess_only';
+                const customVal = customRents[member.id] || '';
+                const hasCustom = customVal !== '' && parseFloat(customVal) > 0;
+                
+                // Calculate theoretical equal share
+                const totalRent = parseFloat(presetRentAmount) || 0;
+                const rentEligible = members.filter(m => m.membershipType !== 'mess_only');
+                const customSum = rentEligible.reduce((sum, m) => {
+                  const val = customRents[m.id] ? parseFloat(customRents[m.id]) : (m.customRentShare || 0);
+                  return sum + (val > 0 ? val : 0);
+                }, 0);
+                const nonCustomCount = rentEligible.filter(m => {
+                  const val = customRents[m.id] ? parseFloat(customRents[m.id]) : (m.customRentShare || 0);
+                  return val <= 0;
+                }).length;
+                
+                const equalShare = presetRentType === 'per_member'
+                  ? totalRent
+                  : (nonCustomCount > 0 ? Math.max(0, (totalRent - customSum) / nonCustomCount) : 0);
+
+                const finalShare = isMessOnly ? 0 : (hasCustom ? parseFloat(customVal) : equalShare);
+
+                return (
+                  <div
+                    key={member.id}
+                    className="p-4 bg-slate-900/80 border border-white/10 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 hover:border-white/20 transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={member.avatar}
+                        alt={member.name}
+                        className="w-10 h-10 rounded-xl object-cover border border-white/10"
+                      />
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white">{member.name}</span>
+                          {member.role === 'super_admin' && (
+                            <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded-full font-bold">
+                              Super Admin
+                            </span>
+                          )}
+                          {isMessOnly && (
+                            <span className="text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30 px-1.5 py-0.5 rounded-full font-bold">
+                              Mess Only (Rent Exempt)
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-slate-400 font-mono">{member.email}</span>
+                      </div>
+                    </div>
+
+                    {/* Rent Calculation & Custom Input Controls */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div className="text-right">
+                        <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Final Monthly Rent</span>
+                        <span className={`text-base font-black ${isMessOnly ? 'text-slate-500 line-through' : 'text-emerald-400 font-mono'}`}>
+                          {settings.currencySymbol}{finalShare.toFixed(2)}
+                        </span>
+                      </div>
+
+                      {!isMessOnly && (
+                        <div className="flex items-center gap-2">
+                          <div className="relative w-36">
+                            <span className="absolute left-2.5 top-2 text-slate-500 text-xs font-bold">{settings.currencySymbol}</span>
+                            <input
+                              type="number"
+                              value={customVal}
+                              onChange={(e) => {
+                                setCustomRents(prev => ({
+                                  ...prev,
+                                  [member.id]: e.target.value,
+                                }));
+                              }}
+                              placeholder={`Equal (${settings.currencySymbol}${equalShare.toFixed(0)})`}
+                              className={`w-full pl-6 pr-2 py-1.5 rounded-xl text-xs font-bold border transition-all placeholder-slate-600 focus:outline-none ${
+                                hasCustom
+                                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-300'
+                                  : 'bg-slate-950 border-white/10 text-white focus:border-emerald-500'
+                              }`}
+                            />
+                          </div>
+
+                          {hasCustom && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCustomRents(prev => {
+                                  const updated = { ...prev };
+                                  delete updated[member.id];
+                                  return updated;
+                                });
+                              }}
+                              className="px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white text-[11px] font-semibold border border-white/10 transition-colors cursor-pointer"
+                              title="Reset to default equal split"
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+        </div>
+      )}
 
       {/* SUB-TAB 1: MEMBERS LIST & ALLOCATED CREDENTIALS & REMOVAL */}
       {activeSubTab === 'members' && (

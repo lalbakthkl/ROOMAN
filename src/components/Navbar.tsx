@@ -120,10 +120,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             {canInstallPWA && (
               <button
                 onClick={onInstallPWA}
-                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/10 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-600/20 text-xs font-semibold tracking-wide transition-all min-h-[36px]"
+                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 text-white text-xs font-bold tracking-wide transition-all shadow-md shadow-indigo-600/20 hover:from-indigo-500 hover:to-indigo-600 min-h-[36px] cursor-pointer"
+                title="Install ROOMEX App on your device"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Install</span>
+                <span className="hidden xs:inline">Install</span>
               </button>
             )}
 

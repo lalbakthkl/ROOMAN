@@ -95,25 +95,12 @@ export default function App() {
     getActiveMemberId(loadRoomData().members)
   );
 
-  // Auth User State - auto-initializes to primary active member so dashboard opens instantly
+  // Auth User State - strictly null if not logged in (no default auto-login)
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
     try {
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
       if (saved) return JSON.parse(saved);
     } catch {}
-    const initialData = loadRoomData();
-    const defaultMember = initialData.members[0];
-    if (defaultMember) {
-      return {
-        id: defaultMember.id,
-        memberId: defaultMember.id,
-        email: defaultMember.email,
-        name: defaultMember.name,
-        avatar: defaultMember.avatar,
-        role: defaultMember.role,
-        roomCode: initialData.settings.roomCode,
-      };
-    }
     return null;
   });
 
@@ -138,11 +125,57 @@ export default function App() {
   const [canInstallPWA, setCanInstallPWA] = useState(false);
   const [showPwaBanner, setShowPwaBanner] = useState(true);
 
-  // Current active acting member object
-  const activeMember = roomData.members.find(m => m.id === activeMemberId) || roomData.members[0];
+  // Current active acting member object with clean fallback for fresh rooms
+  const activeMember: Member = roomData.members.find(m => m.id === activeMemberId) || roomData.members[0] || {
+    id: authUser?.memberId || 'admin_1',
+    name: authUser?.name || 'Admin',
+    username: authUser?.name?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'admin',
+    email: authUser?.email || 'admin@roomex.app',
+    role: authUser?.role || 'super_admin',
+    permissions: DEFAULT_PERMISSIONS[authUser?.role || 'super_admin'],
+    avatar: authUser?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    isMessActive: true,
+    membershipType: 'both',
+    depositBalance: 0,
+    daysStayed: 30,
+    joinedAt: new Date().toISOString(),
+  };
 
   // Auth Login Handler
-  const handleLogin = (user: AuthUser) => {
+  const handleLogin = (user: AuthUser, loadedRoomData?: RoomData) => {
+    let targetRoom = loadedRoomData || roomData;
+
+    // If user is not yet in targetRoom.members, add them as real member
+    const existingMember = targetRoom.members.find(m => m.id === user.memberId || m.email?.toLowerCase() === user.email.toLowerCase());
+    if (!existingMember) {
+      const isSuper = user.role === 'super_admin' || targetRoom.members.length === 0;
+      const assignedRole: Role = isSuper ? 'super_admin' : (user.role || 'member');
+      const newM: Member = {
+        id: user.memberId || `user_${Date.now()}`,
+        name: user.name || 'Admin',
+        username: user.name?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'admin',
+        email: user.email,
+        role: assignedRole,
+        permissions: DEFAULT_PERMISSIONS[assignedRole],
+        avatar: user.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+        joinedAt: new Date().toISOString(),
+        isMessActive: true,
+        membershipType: 'both',
+        depositBalance: 0,
+        daysStayedInMonth: targetRoom.settings.daysInMonth || 30,
+      };
+      targetRoom = {
+        ...targetRoom,
+        settings: {
+          ...targetRoom.settings,
+          roomCode: user.roomCode || targetRoom.settings.roomCode || `ROOM${Math.floor(100 + Math.random() * 900)}`,
+        },
+        members: [...targetRoom.members, newM],
+      };
+    }
+
+    setRoomData(targetRoom);
+    saveRoomData(targetRoom);
     setAuthUser(user);
     setActiveMemberIdState(user.memberId);
     setActiveMemberId(user.memberId);
@@ -858,6 +891,31 @@ export default function App() {
     setIsSettingsModalOpen(false);
   };
 
+  // Custom Member Rent Handler
+  const handleUpdateMemberCustomRent = (memberId: string, customRent: number | undefined) => {
+    setRoomData(prev => ({
+      ...prev,
+      members: prev.members.map(m => 
+        m.id === memberId 
+          ? { ...m, customRentShare: customRent, rentShareOverride: customRent !== undefined && customRent > 0 } 
+          : m
+      ),
+    }));
+  };
+
+  // Preset Rent Handler
+  const handleUpdatePresetRent = (presetActive: boolean, amount: number, type: 'total_room' | 'per_member') => {
+    setRoomData(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        presetRentActive: presetActive,
+        presetRentAmount: amount,
+        presetRentType: type,
+      },
+    }));
+  };
+
   // Reset Demo Data
   const handleResetData = () => {
     if (window.confirm('Reset all demo expenses, meals, and balances to clean state?')) {
@@ -1234,6 +1292,10 @@ export default function App() {
             activeMember={activeMember}
             settings={roomData.settings}
             auditLogs={roomData.auditLogs}
+            expenses={roomData.expenses}
+            onSaveExpense={handleSaveExpense}
+            onDeleteExpense={handleDeleteExpense}
+            onOpenAddExpenseModal={() => setIsAddExpenseOpen(true)}
             onUpdateMemberRole={handleUpdateMemberRole}
             onAddNewMember={handleAddNewMember}
             onRemoveMember={handleRemoveMember}
@@ -1243,6 +1305,8 @@ export default function App() {
             onUpdateMemberMembershipType={handleUpdateMemberMembershipType}
             onUpdateMemberParticipation={handleUpdateMemberParticipation}
             onBulkUpdateParticipation={handleBulkUpdateParticipation}
+            onUpdateMemberCustomRent={handleUpdateMemberCustomRent}
+            onUpdatePresetRent={handleUpdatePresetRent}
           />
         )}
 

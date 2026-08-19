@@ -19,6 +19,7 @@ export function initPWA(): void {
     e.preventDefault();
     deferredPrompt = e as BeforeInstallPromptEvent;
     notifyListeners(true);
+    console.log('ROOMEX PWA install prompt ready');
   });
 
   window.addEventListener('appinstalled', () => {
@@ -28,11 +29,16 @@ export function initPWA(): void {
   });
 
   // Register service worker if supported
-  if ('serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
+  if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/sw.js').catch((err) => {
-        console.warn('Service worker registration failed:', err);
-      });
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => {
+          console.log('ROOMEX PWA Service Worker registered:', reg.scope);
+        })
+        .catch((err) => {
+          console.warn('Service worker registration notice:', err);
+        });
     });
   }
 }
@@ -51,7 +57,9 @@ function notifyListeners(canInstall: boolean) {
 }
 
 export async function promptPWAInstall(): Promise<boolean> {
-  if (!deferredPrompt) return false;
+  if (!deferredPrompt) {
+    return false;
+  }
   try {
     await deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;

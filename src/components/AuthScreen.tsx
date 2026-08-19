@@ -1,66 +1,27 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { 
   Lock, 
-  Mail, 
   User, 
-  Home, 
-  Sparkles, 
-  ShieldCheck, 
   Eye, 
   EyeOff, 
-  ArrowRight, 
   LogIn, 
-  UserPlus,
-  Zap,
-  CheckCircle2,
-  AlertCircle,
-  Users,
-  Check,
-  X,
-  Crown,
-  Building,
-  Key,
-  Smartphone,
-  Share2,
-  ChevronRight
+  AlertCircle, 
+  Users, 
+  Check, 
+  Crown, 
+  Building, 
+  Smartphone, 
+  RefreshCw,
+  Globe
 } from 'lucide-react';
-import { Member, Role, AuthUser, MembershipType, RoomSettings } from '../types';
-import { RoomexLogo } from './RoomexLogo';
-
-declare global {
-  interface Window {
-    google?: {
-      accounts: {
-        id: {
-          initialize: (config: {
-            client_id: string;
-            callback: (response: { credential?: string; select_by?: string }) => void;
-            auto_select?: boolean;
-            cancel_on_tap_outside?: boolean;
-            context?: string;
-          }) => void;
-          prompt: (notification?: (notification: { isNotDisplayed: () => boolean; isSkippedMoment: () => boolean; isDismissedMoment: () => boolean; getNotDisplayedReason?: () => string }) => void) => void;
-          renderButton: (parent: HTMLElement, options: {
-            theme?: 'outline' | 'filled_blue' | 'filled_black';
-            size?: 'large' | 'medium' | 'small';
-            type?: 'standard' | 'icon';
-            shape?: 'rectangular' | 'pill' | 'circle' | 'square';
-            text?: 'signin_with' | 'signup_with' | 'continue_with' | 'signin';
-            logo_alignment?: 'left' | 'center';
-            width?: string | number;
-          }) => void;
-          cancel: () => void;
-        };
-      };
-    };
-  }
-}
+import { Member, Role, AuthUser, MembershipType, RoomSettings, RoomData } from '../types';
+import { fetchRoomFromSupabase } from '../lib/storage';
 
 interface AuthScreenProps {
   existingMembers?: Member[];
   members?: Member[];
   settings?: RoomSettings;
-  onLogin: (user: AuthUser) => void;
+  onLogin: (user: AuthUser, loadedRoomData?: RoomData) => void;
   onRegister?: (memberData: { name: string; email: string; password?: string; role: Role; upiId?: string; membershipType?: MembershipType }) => void;
   onRegisterNewRoom?: (params: {
     adminName: string;
@@ -80,814 +41,549 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   members = [],
   settings,
   onLogin,
-  onRegister,
   onRegisterNewRoom,
-  roomName = 'ROOMEX',
 }) => {
   const memberList = existingMembers.length > 0 ? existingMembers : members;
-  const currentRoomCode = settings?.roomCode || 'SKY402';
-  const currentRoomName = settings?.name || roomName;
+  const currentRoomCode = settings?.roomCode || '';
 
-  // Main Auth Tab: 'super_admin' (Email & Password / New Room) vs 'member' (Room Code + Allocated Username & Password)
-  const [authMode, setAuthMode] = useState<'super_admin' | 'member'>('super_admin');
-  
-  // Super Admin Sub-mode: 'login' vs 'create_room'
-  const [adminAction, setAdminAction] = useState<'login' | 'create_room'>('login');
+  // Clean 2-Tab Login: Admin Log In & Member Log In only
+  const [activeLoginTab, setActiveLoginTab] = useState<'admin' | 'member'>('admin');
 
-  // Super Admin Form States
-  const [adminEmail, setAdminEmail] = useState('');
+  // --- ADMIN LOGIN FORM STATE ---
+  const [adminRoomCode, setAdminRoomCode] = useState(currentRoomCode);
+  const [adminIdentifier, setAdminIdentifier] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
-  const [adminName, setAdminName] = useState('');
-  const [newRoomName, setNewRoomName] = useState('Skyline Flat 402');
-  const [newRoomCode, setNewRoomCode] = useState(currentRoomCode);
+  const [isAdminCreatingNewRoom, setIsAdminCreatingNewRoom] = useState(false);
+  const [newRoomTitle, setNewRoomTitle] = useState('');
   const [newRoomCurrency, setNewRoomCurrency] = useState('INR');
-  const [adminUpiId, setAdminUpiId] = useState('');
 
-  // Member Form States
+  // --- MEMBER LOGIN FORM STATE ---
   const [memberRoomCode, setMemberRoomCode] = useState(currentRoomCode);
   const [memberUsername, setMemberUsername] = useState('');
   const [memberPassword, setMemberPassword] = useState('');
 
+  // UI helpers
   const [showPassword, setShowPassword] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [showOneTapOverlay, setShowOneTapOverlay] = useState(true);
 
-  const googleButtonContainerRef = useRef<HTMLDivElement>(null);
-
-  // Helper to decode standard Google JWT token without dependencies
-  const decodeJwtPayload = (token: string): { email?: string; name?: string; picture?: string; sub?: string } | null => {
-    try {
-      const base64Url = token.split('.')[1];
-      if (!base64Url) return null;
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-      const jsonPayload = decodeURIComponent(
-        atob(base64)
-          .split('')
-          .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-          .join('')
-      );
-      return JSON.parse(jsonPayload);
-    } catch (e) {
-      console.warn('Could not parse Google JWT token payload', e);
-      return null;
-    }
-  };
-
-  // Process Super Admin Google Auth
-  const processGoogleUser = (userEmail: string, userName?: string, userAvatar?: string) => {
-    setIsGoogleLoading(true);
+  // 1. ADMIN LOGIN HANDLER
+  const handleAdminLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setErrorMsg(null);
+    setSuccessMsg(null);
 
-    setTimeout(() => {
-      const targetEmail = userEmail.trim().toLowerCase();
-      const existing = memberList.find(m => m.email.toLowerCase() === targetEmail);
+    const inputCode = adminRoomCode.trim().toUpperCase();
+    const inputUser = adminIdentifier.trim();
+    const inputPass = adminPassword.trim();
 
-      if (existing) {
-        onLogin({
-          id: existing.id,
-          memberId: existing.id,
-          email: existing.email,
-          name: existing.name,
-          avatar: existing.avatar,
-          role: existing.role,
-          roomCode: currentRoomCode,
-        });
-      } else {
-        const computedName = userName || (targetEmail === 'lalbakth@gmail.com' 
-          ? 'Lal Bakth' 
-          : targetEmail.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()));
+    if (!inputCode) {
+      setErrorMsg('Please enter your Room Code.');
+      return;
+    }
 
-        // Whoever logs in with email is Super Admin and creates/loads their room
+    if (!inputUser || !inputPass) {
+      setErrorMsg('Please enter your Admin Username / Email and Password.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      // 1. Fetch room from online Supabase cloud
+      let targetRoomData: RoomData | null = null;
+      if (inputCode) {
+        targetRoomData = await fetchRoomFromSupabase(inputCode);
+      }
+
+      const activeMemberList = targetRoomData ? targetRoomData.members : (inputCode === currentRoomCode ? memberList : []);
+
+      // First user rule: if no members exist in the room or creating a new room, make them Super Admin!
+      if (activeMemberList.length === 0 || isAdminCreatingNewRoom) {
+        const adminEmail = inputUser.includes('@') ? inputUser.toLowerCase() : `${inputUser.toLowerCase()}@roomex.app`;
+        const adminName = inputUser.includes('@') 
+          ? inputUser.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+          : inputUser;
+
+        const currSym = newRoomCurrency === 'INR' ? '₹' : newRoomCurrency === 'USD' ? '$' : '₹';
+
         if (onRegisterNewRoom) {
           onRegisterNewRoom({
-            adminName: computedName,
-            email: targetEmail,
-            password: 'password123',
-            roomName: 'My Flat',
-            roomCode: `ROOM${Math.floor(100 + Math.random() * 900)}`,
-            currency: 'INR',
-            currencySymbol: '₹',
+            adminName,
+            email: adminEmail,
+            password: inputPass,
+            roomName: newRoomTitle.trim() || 'My Flat',
+            roomCode: inputCode,
+            currency: newRoomCurrency,
+            currencySymbol: currSym,
           });
         } else {
-          const newId = `usr_${Date.now()}`;
+          const newAdminId = `admin_${Date.now()}`;
           onLogin({
-            id: newId,
-            memberId: newId,
-            email: targetEmail,
-            name: computedName,
-            avatar: userAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
+            id: newAdminId,
+            memberId: newAdminId,
+            email: adminEmail,
+            name: adminName,
+            avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
             role: 'super_admin',
-            roomCode: currentRoomCode,
-          });
+            roomCode: inputCode,
+          }, targetRoomData || undefined);
         }
-      }
-      setIsGoogleLoading(false);
-    }, 350);
-  };
-
-  // Initialize Google Identity Services
-  useEffect(() => {
-    const initGsi = () => {
-      const customClientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || localStorage.getItem('roomex_google_client_id');
-      if (customClientId && customClientId.trim() !== '' && !customClientId.includes('1029384756') && window.google?.accounts?.id) {
-        try {
-          window.google.accounts.id.initialize({
-            client_id: customClientId.trim(),
-            callback: (response) => {
-              if (response.credential) {
-                const payload = decodeJwtPayload(response.credential);
-                if (payload && payload.email) {
-                  processGoogleUser(payload.email, payload.name, payload.picture);
-                  return;
-                }
-              }
-              processGoogleUser('lalbakth@gmail.com', 'Lal Bakth');
-            },
-            auto_select: false,
-            cancel_on_tap_outside: false,
-            context: 'signin'
-          });
-        } catch (e) {
-          console.warn('Google GSI initialization notice:', e);
-        }
-      }
-    };
-
-    const timer = setTimeout(initGsi, 400);
-    return () => clearTimeout(timer);
-  }, []);
-
-  const hasSuperAdmin = memberList.some(m => m.role === 'super_admin');
-  const superAdminMember = memberList.find(m => m.role === 'super_admin');
-
-  // 1. SUPER ADMIN SIGN IN (Email & Password)
-  const handleSuperAdminLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg(null);
-
-    const cleanEmail = adminEmail.trim().toLowerCase();
-    const cleanPassword = adminPassword.trim();
-
-    if (!cleanEmail || !cleanPassword) {
-      setErrorMsg('Please enter your Super Admin Email and Password.');
-      return;
-    }
-
-    // Match member by email
-    const matched = memberList.find(m => m.email.toLowerCase() === cleanEmail);
-
-    if (matched) {
-      if (matched.role !== 'super_admin' && matched.role !== 'admin') {
-        setErrorMsg(`${matched.name} is registered as a regular Roommate. Please switch to the "Roommate / Member Login" tab.`);
+        setIsLoading(false);
         return;
       }
 
-      if (matched.password && matched.password !== cleanPassword && cleanPassword !== 'password123') {
-        setErrorMsg('Incorrect Super Admin password. (Default demo: password123)');
+      // 2. Find matching admin in existing room
+      const matched = activeMemberList.find(m => 
+        m.email.toLowerCase() === inputUser.toLowerCase() ||
+        (m.username && m.username.toLowerCase() === inputUser.toLowerCase()) ||
+        m.name.toLowerCase() === inputUser.toLowerCase() ||
+        m.name.toLowerCase().split(' ')[0] === inputUser.toLowerCase()
+      );
+
+      if (matched) {
+        // Check admin permissions
+        if (matched.role !== 'super_admin' && matched.role !== 'admin' && matched.role !== 'co_admin') {
+          // If no super_admin exists in room yet, elevate first login to super_admin!
+          const hasExistingSuperAdmin = activeMemberList.some(m => m.role === 'super_admin');
+          if (!hasExistingSuperAdmin) {
+            matched.role = 'super_admin';
+          } else {
+            setErrorMsg(`${matched.name} is a Roommate. Please switch to the "Member Login" tab or ask your Super Admin for admin access.`);
+            setIsLoading(false);
+            return;
+          }
+        }
+
+        // Validate password
+        const validPass = matched.allocatedPassword || matched.password || 'password123';
+        if (inputPass !== validPass && inputPass !== 'password123') {
+          setErrorMsg(`Incorrect password for ${matched.name}. Please check your credentials.`);
+          setIsLoading(false);
+          return;
+        }
+
+        setSuccessMsg(`Welcome, Super Admin ${matched.name}!`);
+        setTimeout(() => {
+          onLogin({
+            id: matched.id,
+            memberId: matched.id,
+            email: matched.email,
+            name: matched.name,
+            avatar: matched.avatar,
+            role: matched.role,
+            roomCode: inputCode,
+          }, targetRoomData || undefined);
+        }, 300);
         return;
       }
 
-      onLogin({
-        id: matched.id,
-        memberId: matched.id,
-        email: matched.email,
-        name: matched.name,
-        avatar: matched.avatar,
-        role: matched.role,
-        roomCode: currentRoomCode,
-      });
-      return;
-    }
+      // If user is logging in with a new admin identity, check if first user to set up the room
+      const computedName = inputUser.includes('@')
+        ? inputUser.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+        : inputUser;
+      const computedEmail = inputUser.includes('@') ? inputUser.toLowerCase() : `${inputUser.toLowerCase()}@roomex.app`;
 
-    // If user signs in with email/password and no room match exists, create their Super Admin room immediately
-    const computedName = cleanEmail.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-    if (onRegisterNewRoom) {
-      onRegisterNewRoom({
-        adminName: computedName,
-        email: cleanEmail,
-        password: cleanPassword,
-        roomName: 'My Flat',
-        roomCode: `ROOM${Math.floor(100 + Math.random() * 900)}`,
-        currency: 'INR',
-        currencySymbol: '₹',
-      });
-    } else {
       const newId = `admin_${Date.now()}`;
-      onLogin({
-        id: newId,
-        memberId: newId,
-        email: cleanEmail,
-        name: computedName,
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-        role: 'super_admin',
-        roomCode: currentRoomCode,
-      });
+      setSuccessMsg(`Welcome! Initializing room as Super Admin...`);
+      setTimeout(() => {
+        onLogin({
+          id: newId,
+          memberId: newId,
+          email: computedEmail,
+          name: computedName,
+          avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          role: 'super_admin',
+          roomCode: inputCode,
+        }, targetRoomData || undefined);
+      }, 300);
+
+    } catch (err: any) {
+      console.error('Login error:', err);
+      setErrorMsg(err?.message || 'Login failed. Please check network connection.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // 2. SUPER ADMIN CREATE NEW ROOM (Email & Password)
-  const handleSuperAdminCreateRoom = (e: React.FormEvent) => {
+  // 2. MEMBER LOGIN HANDLER (Room Code + Username + Password)
+  const handleMemberLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
-
-    const cleanName = adminName.trim();
-    const cleanEmail = adminEmail.trim().toLowerCase();
-    const cleanPassword = adminPassword.trim();
-    const cleanRoomName = newRoomName.trim() || 'My Apartment';
-    const cleanRoomCode = (newRoomCode.trim() || `ROOM${Math.floor(100 + Math.random() * 900)}`).toUpperCase();
-
-    if (!cleanName || !cleanEmail || !cleanPassword) {
-      setErrorMsg('Please fill in Super Admin Name, Email, and Password.');
-      return;
-    }
-
-    if (cleanPassword.length < 6) {
-      setErrorMsg('Password must be at least 6 characters.');
-      return;
-    }
-
-    const currSym = newRoomCurrency === 'INR' ? '₹' : newRoomCurrency === 'USD' ? '$' : newRoomCurrency === 'EUR' ? '€' : '₹';
-
-    if (onRegisterNewRoom) {
-      onRegisterNewRoom({
-        adminName: cleanName,
-        email: cleanEmail,
-        password: cleanPassword,
-        roomName: cleanRoomName,
-        roomCode: cleanRoomCode,
-        currency: newRoomCurrency,
-        currencySymbol: currSym,
-        upiId: adminUpiId.trim() || undefined,
-      });
-    } else if (onRegister) {
-      onRegister({
-        name: cleanName,
-        email: cleanEmail,
-        password: cleanPassword,
-        role: 'super_admin',
-        upiId: adminUpiId.trim() || undefined,
-      });
-    }
-  };
-
-  // 3. ROOM MEMBER LOGIN (Room Code + Allocated Username/Phone + Allocated Password)
-  const handleMemberLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg(null);
+    setSuccessMsg(null);
 
     const inputCode = memberRoomCode.trim().toUpperCase();
     const inputUser = memberUsername.trim().toLowerCase();
     const inputPass = memberPassword.trim();
 
+    if (!inputCode) {
+      setErrorMsg('Please enter the Room Code given by your Admin.');
+      return;
+    }
+
     if (!inputUser || !inputPass) {
-      setErrorMsg('Please enter your allocated username and password.');
+      setErrorMsg('Please enter your allocated Username and Password.');
       return;
     }
 
-    // Match member by username, name, email, or phone
-    const matched = memberList.find(m => 
-      (m.username && m.username.toLowerCase() === inputUser) ||
-      m.name.toLowerCase() === inputUser ||
-      m.email.toLowerCase() === inputUser ||
-      m.email.toLowerCase().split('@')[0] === inputUser ||
-      (m.phone && m.phone.replace(/[^0-9]/g, '').includes(inputUser.replace(/[^0-9]/g, '')))
-    );
+    setIsLoading(true);
 
-    if (!matched) {
-      setErrorMsg(`No roommate found matching "${memberUsername}". Please check with your Super Admin (${superAdminMember?.name || 'Admin'}) for your allocated username.`);
-      return;
+    try {
+      // 1. Fetch room from Supabase cloud
+      let targetRoomData: RoomData | null = null;
+      if (inputCode) {
+        targetRoomData = await fetchRoomFromSupabase(inputCode);
+      }
+
+      const activeMemberList = targetRoomData ? targetRoomData.members : (inputCode === currentRoomCode ? memberList : []);
+
+      if (!activeMemberList || activeMemberList.length === 0) {
+        setErrorMsg(`Room "${inputCode}" not found. Please confirm the Room Code with your Admin.`);
+        setIsLoading(false);
+        return;
+      }
+
+      // 2. Match member by allocated username, name, email, or phone
+      const matched = activeMemberList.find(m => 
+        (m.username && m.username.toLowerCase() === inputUser) ||
+        m.name.toLowerCase() === inputUser ||
+        m.name.toLowerCase().split(' ')[0] === inputUser ||
+        m.email.toLowerCase() === inputUser ||
+        m.email.toLowerCase().split('@')[0] === inputUser ||
+        (m.phone && m.phone.replace(/[^0-9]/g, '').includes(inputUser.replace(/[^0-9]/g, '')))
+      );
+
+      if (!matched) {
+        setErrorMsg(`Roommate "${memberUsername}" was not found in Room ${inputCode}. Ask your Admin for your exact login username.`);
+        setIsLoading(false);
+        return;
+      }
+
+      // 3. Verify Password
+      const validPassword = matched.allocatedPassword || matched.password || 'password123';
+      if (inputPass !== validPassword && inputPass !== 'password123') {
+        setErrorMsg(`Incorrect password for ${matched.name}. Please enter the password allocated by your Admin.`);
+        setIsLoading(false);
+        return;
+      }
+
+      setSuccessMsg(`Welcome, ${matched.name}!`);
+
+      setTimeout(() => {
+        onLogin({
+          id: matched.id,
+          memberId: matched.id,
+          email: matched.email,
+          name: matched.name,
+          avatar: matched.avatar,
+          role: matched.role,
+          roomCode: inputCode,
+        }, targetRoomData || undefined);
+      }, 300);
+
+    } catch (err: any) {
+      console.error('Member login error:', err);
+      setErrorMsg(err?.message || 'Login failed. Please check network connection.');
+    } finally {
+      setIsLoading(false);
     }
-
-    // Verify password against allocatedPassword or password or default demo password
-    const validPassword = matched.allocatedPassword || matched.password || 'password123';
-    if (inputPass !== validPassword && inputPass !== 'password123') {
-      setErrorMsg(`Incorrect password for ${matched.name}. Please enter the password allocated by your Admin.`);
-      return;
-    }
-
-    onLogin({
-      id: matched.id,
-      memberId: matched.id,
-      email: matched.email,
-      name: matched.name,
-      avatar: matched.avatar,
-      role: matched.role,
-      roomCode: inputCode || currentRoomCode,
-    });
-  };
-
-  // Quick select roommate
-  const handleSelectQuickMember = (m: Member) => {
-    setAuthMode('member');
-    setMemberUsername(m.username || m.name.toLowerCase().split(' ')[0]);
-    setMemberPassword(m.allocatedPassword || m.password || 'password123');
-    setErrorMsg(null);
   };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center p-4 sm:p-6 relative overflow-hidden font-sans">
       
-      {/* Ambient background glows */}
-      <div className="absolute -top-40 -left-40 w-96 h-96 bg-amber-600/10 rounded-full blur-3xl pointer-events-none" />
-      <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none" />
+      {/* Background ambient lighting */}
+      <div className="absolute -top-40 -left-40 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-emerald-600/15 rounded-full blur-3xl pointer-events-none" />
 
-      {/* Google One Tap Quick Access (Super Admin) */}
-      {showOneTapOverlay && (
-        <div className="fixed top-4 right-4 z-50 max-w-sm w-[calc(100vw-2rem)] bg-white text-slate-900 rounded-2xl shadow-2xl border border-slate-200 p-3.5 animate-in slide-in-from-top-4 duration-300">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-            <div className="flex items-center gap-2">
-              <svg className="w-4 h-4" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-              </svg>
-              <span className="text-xs font-bold text-slate-800">Super Admin Fast Login</span>
-            </div>
-            <button 
-              onClick={() => setShowOneTapOverlay(false)} 
-              className="text-slate-400 hover:text-slate-700 p-1 rounded-full"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          <div className="py-2.5 flex items-center gap-3">
-            <img 
-              src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150" 
-              alt="Lal Bakth" 
-              className="w-10 h-10 rounded-full border border-slate-200 object-cover shadow-sm shrink-0" 
-            />
-            <div className="min-w-0">
-              <span className="text-xs font-bold text-slate-900 block truncate">Lal Bakth</span>
-              <span className="text-[11px] text-slate-500 font-mono block truncate">lalbakth@gmail.com (Super Admin)</span>
-            </div>
-          </div>
-
-          <div className="pt-1 flex gap-2">
-            <button
-              onClick={() => {
-                setShowOneTapOverlay(false);
-                processGoogleUser('lalbakth@gmail.com', 'Lal Bakth');
-              }}
-              disabled={isGoogleLoading}
-              className="flex-1 py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 text-xs font-extrabold shadow-md transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              {isGoogleLoading ? (
-                <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <Crown className="w-3.5 h-3.5" />
-              )}
-              <span>Continue as Super Admin</span>
-            </button>
-            <button
-              onClick={() => setShowOneTapOverlay(false)}
-              className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Main Container Card */}
-      <div className="relative z-10 w-full max-w-md bg-slate-900 border border-white/10 rounded-3xl shadow-2xl overflow-hidden backdrop-blur-xl animate-in fade-in zoom-in-95 duration-300">
+      {/* Main Login Card */}
+      <div className="w-full max-w-md bg-slate-900 border border-white/10 rounded-3xl shadow-2xl p-6 sm:p-8 relative z-10 backdrop-blur-xl space-y-6">
         
-        {/* App Header */}
-        <div className="p-6 pb-4 border-b border-white/10 bg-slate-950/70 text-center space-y-2">
-          <div className="flex justify-center mb-1">
-            <RoomexLogo size="lg" />
+        {/* Header */}
+        <div className="text-center space-y-2">
+          <div className="inline-flex items-center justify-center p-3 rounded-2xl bg-gradient-to-br from-indigo-600 to-indigo-800 shadow-xl shadow-indigo-600/20 mb-1 border border-indigo-400/30">
+            <Building className="w-7 h-7 text-white" />
           </div>
-          
-          <div>
-            <h1 className="text-xl font-black text-white tracking-tight flex items-center justify-center gap-1.5">
-              ROOMEX
-              <span className="text-[10px] uppercase font-bold tracking-widest px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
-                PRO
-              </span>
-            </h1>
-            <p className="text-xs text-slate-400">
-              Mess & Room Expense Management App
-            </p>
-          </div>
+          <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+            ROOMEX
+          </h1>
+          <p className="text-xs text-slate-400 font-medium">
+            Smart Flat, Rent & Mess Expense Manager
+          </p>
 
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 text-[11px] text-slate-300 font-mono">
-            <Sparkles className="w-3 h-3 text-indigo-400" />
-            <span>App developed by <strong className="text-indigo-400 font-semibold">sakeerputhan</strong></span>
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-[11px] font-mono font-bold mt-1">
+            <Globe className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Worldwide Multi-Device Cloud Sync</span>
           </div>
         </div>
 
-        {/* PRIMARY ROLE TAB SWITCHER: Super Admin vs Roommate */}
-        <div className="grid grid-cols-2 p-1.5 bg-slate-950/90 border-b border-white/10 text-xs font-bold">
-          
+        {/* PRIMARY 2-TAB LOGIN SWITCHER: ADMIN vs MEMBER ONLY */}
+        <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950 rounded-2xl border border-white/10">
           <button
             type="button"
-            onClick={() => { 
-              setAuthMode('super_admin'); 
-              setErrorMsg(null); 
+            onClick={() => {
+              setActiveLoginTab('admin');
+              setErrorMsg(null);
             }}
-            className={`py-2.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
-              authMode === 'super_admin' 
-                ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/20 font-black' 
-                : 'text-slate-400 hover:text-white'
+            className={`py-3 px-4 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              activeLoginTab === 'admin'
+                ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-lg shadow-amber-500/20'
+                : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
             <Crown className="w-4 h-4" />
-            <span>Super Admin</span>
+            <span>Admin Log In</span>
           </button>
-          
+
           <button
             type="button"
-            onClick={() => { 
-              setAuthMode('member'); 
-              setErrorMsg(null); 
+            onClick={() => {
+              setActiveLoginTab('member');
+              setErrorMsg(null);
             }}
-            className={`py-2.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
-              authMode === 'member' 
-                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30' 
-                : 'text-slate-400 hover:text-white'
+            className={`py-3 px-4 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              activeLoginTab === 'member'
+                ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-lg shadow-indigo-600/20'
+                : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
             <Users className="w-4 h-4" />
-            <span>Member Login</span>
+            <span>Member Log In</span>
           </button>
         </div>
 
-        {/* Form Body Container */}
-        <div className="p-5 sm:p-6 space-y-4">
-          
-          {errorMsg && (
-            <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2 animate-in fade-in">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
+        {/* Error / Success Alerts */}
+        {errorMsg && (
+          <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs font-medium flex items-center gap-2.5 animate-in fade-in">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
 
-          {/* ========================================================================= */}
-          {/* TAB 1: SUPER ADMIN (EMAIL & PASSWORD) */}
-          {/* ========================================================================= */}
-          {authMode === 'super_admin' && (
-            <div className="space-y-4">
-              
-              {/* Super Admin Sub-Actions: Sign In vs Create New Room */}
-              <div className="flex bg-slate-950 p-1 rounded-xl border border-white/10 text-xs">
+        {successMsg && (
+          <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs font-bold flex items-center gap-2.5 animate-in fade-in">
+            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{successMsg}</span>
+          </div>
+        )}
+
+        {/* ================= TAB 1: ADMIN LOG IN ================= */}
+        {activeLoginTab === 'admin' && (
+          <form onSubmit={handleAdminLoginSubmit} className="space-y-4">
+            
+            {/* First user helper banner */}
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2.5 text-xs text-amber-200/90">
+              <Crown className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <strong className="text-amber-300 block font-bold">Admin Privileges:</strong>
+                <span>The first person to log in or create a room is automatically set as the <strong>Super Admin</strong>.</span>
+              </div>
+            </div>
+
+            {/* Room Code */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Room Code</label>
+              <div className="relative">
+                <Building className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={adminRoomCode}
+                  onChange={(e) => setAdminRoomCode(e.target.value.toUpperCase())}
+                  placeholder="Enter room code (e.g. SKY402)"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white uppercase placeholder-slate-500 font-mono font-bold focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            {/* Admin Identifier */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Admin Username / Email / Name</label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={adminIdentifier}
+                  onChange={(e) => setAdminIdentifier(e.target.value)}
+                  placeholder="Enter your admin name or email"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            {/* Admin Password */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Admin Password</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  placeholder="Enter admin password"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-amber-500"
+                />
                 <button
                   type="button"
-                  onClick={() => { setAdminAction('login'); setErrorMsg(null); }}
-                  className={`flex-1 py-1.5 rounded-lg font-bold transition-all ${
-                    adminAction === 'login' 
-                      ? 'bg-white/10 text-amber-300 shadow-sm' 
-                      : 'text-slate-400 hover:text-white'
-                  }`}
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
                 >
-                  Super Admin Log In
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setAdminAction('create_room'); setErrorMsg(null); }}
-                  className={`flex-1 py-1.5 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
-                    adminAction === 'create_room' 
-                      ? 'bg-amber-500 text-slate-950 shadow-sm' 
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Home className="w-3 h-3" />
-                  <span>+ Create New Room</span>
+                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                 </button>
               </div>
+            </div>
 
-              {/* Notice Banner */}
-              <div className="p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30 text-amber-200 text-xs leading-relaxed flex items-start gap-2.5">
-                <Crown className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-amber-300">Super Admin Authority:</strong> Log in with Email & Password. Super Admins create rooms and allocate usernames & passwords for all flatmates.
+            {/* Create Room Checkbox toggle */}
+            <div className="p-3 bg-slate-950 rounded-xl border border-white/5 flex items-center justify-between">
+              <label className="text-xs text-slate-300 font-medium flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isAdminCreatingNewRoom}
+                  onChange={(e) => setIsAdminCreatingNewRoom(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded text-amber-500 bg-slate-900 border-white/20"
+                />
+                <span>Create a new room with this code</span>
+              </label>
+            </div>
+
+            {isAdminCreatingNewRoom && (
+              <div className="space-y-3 p-3 bg-slate-950/60 rounded-xl border border-amber-500/20">
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-300 font-medium">Flat / Room Name</label>
+                  <input
+                    type="text"
+                    value={newRoomTitle}
+                    onChange={(e) => setNewRoomTitle(e.target.value)}
+                    placeholder="e.g. Skyline Apartment 402"
+                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs text-slate-300 font-medium">Currency</label>
+                  <select
+                    value={newRoomCurrency}
+                    onChange={(e) => setNewRoomCurrency(e.target.value)}
+                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
+                  >
+                    <option value="INR">INR (₹)</option>
+                    <option value="USD">USD ($)</option>
+                    <option value="EUR">EUR (€)</option>
+                    <option value="GBP">GBP (£)</option>
+                    <option value="AED">AED (AED)</option>
+                  </select>
                 </div>
               </div>
+            )}
 
-              {/* 1-Click Google Sign In for Super Admin */}
-              <button
-                type="button"
-                disabled={isGoogleLoading}
-                onClick={() => processGoogleUser('lalbakth@gmail.com', 'Lal Bakth')}
-                className="w-full py-2.5 px-4 rounded-2xl bg-white hover:bg-slate-100 text-slate-900 text-xs font-bold transition-all flex items-center justify-center gap-2.5 shadow-md active:scale-98 min-h-[44px] cursor-pointer"
-              >
-                {isGoogleLoading ? (
-                  <div className="w-4 h-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                  </svg>
-                )}
-                <span>Continue with Google (Super Admin)</span>
-              </button>
-
-              <div className="flex items-center gap-3">
-                <div className="flex-1 h-px bg-white/10" />
-                <span className="text-[10px] uppercase font-mono text-slate-500">or email & password</span>
-                <div className="flex-1 h-px bg-white/10" />
-              </div>
-
-              {adminAction === 'login' ? (
-                /* SUPER ADMIN LOG IN FORM */
-                <form onSubmit={handleSuperAdminLogin} className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1">Super Admin Email</label>
-                    <div className="relative">
-                      <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                      <input
-                        type="email"
-                        required
-                        placeholder="e.g. lalbakth@gmail.com or alex@roomex.app"
-                        value={adminEmail}
-                        onChange={(e) => setAdminEmail(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-xs font-medium text-slate-300">Password</label>
-                      <span className="text-[10px] text-amber-400 font-mono">Demo: password123</span>
-                    </div>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                      <input
-                        type={showPassword ? 'text' : 'password'}
-                        required
-                        placeholder="Enter Super Admin password"
-                        value={adminPassword}
-                        onChange={(e) => setAdminPassword(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-2xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-3 text-slate-500 hover:text-slate-300"
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="w-full py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2 active:scale-95 min-h-[44px] cursor-pointer"
-                  >
-                    <Crown className="w-4 h-4" />
-                    <span>Log In as Super Admin</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                </form>
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-98 text-slate-950 font-black text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/25 cursor-pointer disabled:opacity-50"
+            >
+              {isLoading ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
               ) : (
-                /* SUPER ADMIN CREATE NEW ROOM FORM */
-                <form onSubmit={handleSuperAdminCreateRoom} className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1">Super Admin Full Name *</label>
-                    <div className="relative">
-                      <User className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Lal Bakth"
-                        value={adminName}
-                        onChange={(e) => setAdminName(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1">Super Admin Email Address *</label>
-                    <div className="relative">
-                      <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                      <input
-                        type="email"
-                        required
-                        placeholder="e.g. lalbakth@gmail.com"
-                        value={adminEmail}
-                        onChange={(e) => setAdminEmail(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1">Super Admin Password * (Min 6 chars)</label>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                      <input
-                        type={showPassword ? 'text' : 'password'}
-                        required
-                        minLength={6}
-                        placeholder="••••••••"
-                        value={adminPassword}
-                        onChange={(e) => setAdminPassword(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-2xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-3 text-slate-500 hover:text-slate-300"
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">New Flat / Room Name</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Skyline Flat 402"
-                        value={newRoomName}
-                        onChange={(e) => setNewRoomName(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-2xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">Room Code</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. SKY402"
-                        value={newRoomCode}
-                        onChange={(e) => setNewRoomCode(e.target.value.toUpperCase())}
-                        className="w-full bg-slate-950 border border-white/10 rounded-2xl px-3 py-2 text-xs text-white font-mono uppercase focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-300 mb-1">Currency</label>
-                    <select
-                      value={newRoomCurrency}
-                      onChange={(e) => setNewRoomCurrency(e.target.value)}
-                      className="w-full bg-slate-950 border border-white/10 rounded-2xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 cursor-pointer"
-                    >
-                      <option value="INR">INR (₹) - Indian Rupee</option>
-                      <option value="USD">USD ($) - US Dollar</option>
-                      <option value="EUR">EUR (€) - Euro</option>
-                      <option value="GBP">GBP (£) - British Pound</option>
-                      <option value="AED">AED (د.إ) - UAE Dirham</option>
-                      <option value="SAR">SAR (﷼) - Saudi Riyal</option>
-                    </select>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="w-full py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold shadow-lg shadow-amber-500/20 transition-all flex items-center justify-center gap-2 active:scale-95 min-h-[44px] cursor-pointer"
-                  >
-                    <Building className="w-4 h-4" />
-                    <span>Create Super Admin & Launch Room</span>
-                  </button>
-                </form>
+                <Crown className="w-4 h-4" />
               )}
+              <span>{isAdminCreatingNewRoom ? 'Create & Log In as Super Admin' : 'Log In as Super Admin'}</span>
+            </button>
+          </form>
+        )}
 
-            </div>
-          )}
-
-          {/* ========================================================================= */}
-          {/* TAB 2: ROOMMATE / MEMBER LOGIN (ALLOCATED USERNAME & PASSWORD) */}
-          {/* ========================================================================= */}
-          {authMode === 'member' && (
-            <div className="space-y-4">
-              
-              <div className="p-3 rounded-2xl bg-indigo-950/30 border border-indigo-500/30 text-indigo-200 text-xs leading-relaxed flex items-start gap-2.5">
-                <Users className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="text-indigo-300">Roommate Login:</strong> Enter the Room Code, Username, and Password allocated to you by your Super Admin or Room Admin.
-                </div>
+        {/* ================= TAB 2: MEMBER LOG IN ================= */}
+        {activeLoginTab === 'member' && (
+          <form onSubmit={handleMemberLoginSubmit} className="space-y-4">
+            
+            {/* Member helper banner */}
+            <div className="p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl flex items-start gap-2.5 text-xs text-indigo-200/90">
+              <Smartphone className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+              <div>
+                <strong className="text-indigo-300 block font-bold">Roommate Login:</strong>
+                <span>Enter the <strong>Room Code</strong>, <strong>Username</strong>, and <strong>Password</strong> shared by your Admin to access your account.</span>
               </div>
-
-              <form onSubmit={handleMemberLogin} className="space-y-3">
-                
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">Room Code</label>
-                  <div className="relative">
-                    <Home className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. SKY402"
-                      value={memberRoomCode}
-                      onChange={(e) => setMemberRoomCode(e.target.value.toUpperCase())}
-                      className="w-full bg-slate-950 border border-white/10 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white font-mono uppercase focus:outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1">Allocated Username or Name</label>
-                  <div className="relative">
-                    <User className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. brian, chloe, david, alex"
-                      value={memberUsername}
-                      onChange={(e) => setMemberUsername(e.target.value)}
-                      className="w-full bg-slate-950 border border-white/10 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs font-medium text-slate-300">Allocated Password</label>
-                    <span className="text-[10px] text-indigo-400 font-mono">Demo: password123</span>
-                  </div>
-                  <div className="relative">
-                    <Key className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      required
-                      placeholder="Enter allocated password"
-                      value={memberPassword}
-                      onChange={(e) => setMemberPassword(e.target.value)}
-                      className="w-full bg-slate-950 border border-white/10 rounded-2xl pl-10 pr-10 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-3 text-slate-500 hover:text-slate-300"
-                    >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-extrabold shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 active:scale-95 min-h-[44px] cursor-pointer"
-                >
-                  <LogIn className="w-4 h-4" />
-                  <span>Sign In to Room</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </form>
-
-              {/* Quick 1-Tap Roommate Login Selection */}
-              {memberList.length > 0 && (
-                <div className="pt-3 border-t border-white/10 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] uppercase font-mono tracking-wider text-slate-400 font-bold">
-                      Quick Member Login:
-                    </span>
-                    <span className="text-[10px] text-slate-500 font-mono">
-                      {memberList.length} members in {currentRoomName}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    {memberList.map((m) => (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => handleSelectQuickMember(m)}
-                        className={`flex items-center gap-2 p-2 rounded-2xl border text-left transition-all group ${
-                          memberUsername.toLowerCase() === (m.username || m.name).toLowerCase()
-                            ? 'bg-indigo-600/30 border-indigo-400'
-                            : 'bg-white/5 hover:bg-white/10 border-white/10'
-                        }`}
-                      >
-                        <img
-                          src={m.avatar}
-                          alt={m.name}
-                          className="w-8 h-8 rounded-xl object-cover border border-white/20 shrink-0"
-                        />
-                        <div className="overflow-hidden min-w-0">
-                          <span className="text-xs font-bold text-white block truncate group-hover:text-indigo-300">
-                            {m.name.split(' ')[0]}
-                          </span>
-                          <span className="text-[10px] text-slate-400 font-mono block truncate">
-                            @{m.username || m.name.toLowerCase().split(' ')[0]}
-                          </span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
             </div>
-          )}
 
-        </div>
+            {/* Room Code */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Room Code</label>
+              <div className="relative">
+                <Building className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={memberRoomCode}
+                  onChange={(e) => setMemberRoomCode(e.target.value.toUpperCase())}
+                  placeholder="Enter Room Code (e.g. SKY402)"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white uppercase placeholder-slate-500 font-mono font-bold focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
 
-        {/* Footer Credit Bar */}
-        <div className="p-3 bg-slate-950 border-t border-white/10 text-center text-[11px] text-slate-500 font-mono">
-          App developed by <span className="text-indigo-400 font-semibold">sakeerputhan</span>
-        </div>
+            {/* Member Username */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Your Username / Name</label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={memberUsername}
+                  onChange={(e) => setMemberUsername(e.target.value)}
+                  placeholder="Enter your allocated username"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
 
+            {/* Member Password */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Your Password</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={memberPassword}
+                  onChange={(e) => setMemberPassword(e.target.value)}
+                  placeholder="Enter password allocated by Admin"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                >
+                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-98 text-white font-black text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/25 cursor-pointer disabled:opacity-50"
+            >
+              {isLoading ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-white" />
+              ) : (
+                <LogIn className="w-4 h-4" />
+              )}
+              <span>Log In as Roommate</span>
+            </button>
+          </form>
+        )}
+
+      </div>
+
+      {/* Footer */}
+      <div className="mt-6 text-center text-xs text-slate-500 font-medium">
+        <span>ROOMEX Cloud Sync & Real-Time Flat Expenses</span>
       </div>
 
     </div>

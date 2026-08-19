@@ -73,7 +73,8 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
     members,
     expenses,
     settlements,
-    daysInMonth
+    daysInMonth,
+    settings
   );
 
   const messMetrics = calculateMessMetrics(expenses, meals, members, daysInMonth);
@@ -482,14 +483,14 @@ export const MemberDashboard: React.FC<MemberDashboardProps> = ({
               No bills recorded yet. Click "+ Add Bill" to record one!
             </div>
           ) : (
-            recentExpenses.map((exp) => {
+            recentExpenses.map((exp, index) => {
               const payer = members.find(m => m.id === exp.paidBy);
               const isPaidByMe = exp.paidBy === member.id;
               const mySplit = exp.splits.find(s => s.memberId === member.id);
 
               return (
                 <div 
-                  key={exp.id} 
+                  key={exp.id ? `${exp.id}-${index}` : `expense-item-${index}`} 
                   className="p-3 bg-slate-950/70 border border-white/5 hover:border-white/15 rounded-2xl flex items-center justify-between gap-3 transition-colors"
                 >
                   <div className="flex items-center gap-3 min-w-0">

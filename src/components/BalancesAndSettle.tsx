@@ -48,8 +48,8 @@ export const BalancesAndSettle: React.FC<BalancesAndSettleProps> = ({
   const [copiedUpiId, setCopiedUpiId] = useState<string | null>(null);
 
   const memberMap = new Map<string, Member>(members.map(m => [m.id, m]));
-  const netBalances = calculateNetBalances(members, expenses, settlements);
-  const simplifiedDebts = simplifyDebts(members, expenses, settlements);
+  const netBalances = calculateNetBalances(members, expenses, settlements, settings);
+  const simplifiedDebts = simplifyDebts(members, expenses, settlements, settings);
 
   const triggerConfetti = () => {
     try {
@@ -201,7 +201,7 @@ export const BalancesAndSettle: React.FC<BalancesAndSettleProps> = ({
 
               return (
                 <div 
-                  key={idx}
+                  key={`debt-${debt.fromMemberId}-${debt.toMemberId}-${idx}`}
                   className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                     isPayerActive 
                       ? 'bg-rose-500/10 border-rose-500/40' 

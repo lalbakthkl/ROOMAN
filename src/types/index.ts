@@ -30,6 +30,8 @@ export interface Member {
   daysStayed?: number; // Number of days stayed in month for mess bill calculation
   daysStayedInMonth?: number; // Alias for daysStayed
   membershipType?: MembershipType; // 'both' | 'rent_only' | 'mess_only'
+  customRentShare?: number; // Optional manual custom rent override set by admin (e.g. ₹5,000 for master room)
+  rentShareOverride?: boolean; // True if customRentShare should be used instead of equal split
   upiId?: string;
   allocatedBy?: string;
   // Vacation & Long Leave Participation Management
@@ -194,6 +196,12 @@ export interface RoomSettings {
   roomCode: string;
   createdById: string;
   createdAt: string;
+  // Preset Rent Management (Default Equal Split or Manual Custom Amount)
+  presetRentActive?: boolean; // When true, preset rent is added into payable breakdown & balances
+  presetRentAmount?: number; // Total Room Rent (e.g. 16000) or Per Member Rent (e.g. 4000)
+  monthlyRent?: number; // Alias for presetRentAmount
+  presetRentType?: 'total_room' | 'per_member'; // 'total_room' divides equally among members; 'per_member' charges flat per member
+  presetRentDueDay?: number; // Day of month when rent is due (e.g. 1st or 5th)
 }
 
 export interface AuthUser {

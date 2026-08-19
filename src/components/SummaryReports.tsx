@@ -1,6 +1,5 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { 
-  PieChart, 
   TrendingUp, 
   Download, 
   Share2, 
@@ -8,39 +7,34 @@ import {
   Check, 
   FileText, 
   DollarSign, 
-  AlertCircle, 
   CheckCircle2,
   Utensils,
   Home,
-  Zap,
   Users,
   Archive,
-  Calendar,
-  Sparkles,
   History,
   Eye,
   X,
-  Printer
+  Printer,
+  Sparkles,
+  ExternalLink
 } from 'lucide-react';
-import jsPDF from 'jspdf';
-import html2canvas from 'html2canvas';
 import { 
   Expense, 
   Member, 
   RoomSettings, 
-  DailyMealEntry, 
-  Settlement, 
-  ExpenseCategory,
-  MonthlySnapshot,
-  RoomData
+  MonthlySnapshot, 
+  RoomData,
+  ExpenseCategory
 } from '../types';
 import { 
-  calculateNetBalances, 
-  calculateMessMetrics, 
-  simplifyDebts,
   calculateMonthlySnapshot 
 } from '../lib/storage';
-import { AppLogo } from './AppLogo';
+import { 
+  generateRoomexPdfReport, 
+  downloadPdfFile, 
+  sharePdfFile 
+} from '../lib/pdfGenerator';
 
 interface SummaryReportsProps {
   roomData: RoomData;
@@ -53,22 +47,18 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
   activeMember,
   onSaveMonthlyArchive,
 }) => {
-  const { expenses, members, meals, settlements, settings, monthlyArchives } = roomData;
+  const { expenses, members, settings, monthlyArchives } = roomData;
   const [copiedText, setCopiedText] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [isSharingPdf, setIsSharingPdf] = useState(false);
+  const [downloadSuccessToast, setDownloadSuccessToast] = useState<string | null>(null);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState(false);
   const [viewArchiveSnapshot, setViewArchiveSnapshot] = useState<MonthlySnapshot | null>(null);
 
-  const printRef = useRef<HTMLDivElement>(null);
   const memberMap = new Map<string, Member>(members.map(m => [m.id, m]));
-
   const currentSnapshot = calculateMonthlySnapshot(roomData);
-  const activeSnapshot = viewArchiveSnapshot || currentSnapshot;
 
   const totalSpent = currentSnapshot.totalSpend;
-  const budget = settings.monthlyBudget || 1000;
-  const budgetPercentage = Math.min(100, Math.round((totalSpent / budget) * 100));
-  const isOverBudget = totalSpent > budget;
 
   // Category totals
   const categoryTotals: Record<ExpenseCategory, number> = {
@@ -89,16 +79,6 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
     categoryTotals[e.category] = (categoryTotals[e.category] || 0) + e.amount;
   });
 
-  // Active member specific spending
-  const activeMemberPaid = expenses
-    .filter(e => e.paidBy === activeMember.id)
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  const activeMemberShare = expenses.reduce((sum, e) => {
-    const s = e.splits.find(sp => sp.memberId === activeMember.id);
-    return sum + (s ? s.amount : 0);
-  }, 0);
-
   // Generate WhatsApp formatted summary
   // Color Rule in Text: Minus/Owes = 🟢 GREEN, Plus/Receives = 🔵 BLUE
   const generateWhatsAppSummary = (snap: MonthlySnapshot = currentSnapshot) => {
@@ -115,7 +95,11 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
     
     snap.memberSummaries.forEach(m => {
       // User Rule: If payment minus (owes) = GREEN, if plus (receives) = BLUE
-      const netSymbol = m.netBalance > 0 ? `🔵 +${settings.currencySymbol}${m.netBalance.toFixed(2)} (GETS BACK)` : m.netBalance < 0 ? `🟢 -${settings.currencySymbol}${Math.abs(m.netBalance).toFixed(2)} (OWES/TO PAY)` : `⚪ ${settings.currencySymbol}0.00 (SETTLED)`;
+      const netSymbol = m.netBalance > 0.01 
+        ? `🔵 +${settings.currencySymbol}${m.netBalance.toFixed(2)} (GETS BACK)` 
+        : m.netBalance < -0.01 
+          ? `🟢 -${settings.currencySymbol}${Math.abs(m.netBalance).toFixed(2)} (OWES/TO PAY)` 
+          : `⚪ ${settings.currencySymbol}0.00 (SETTLED)`;
       const typeStr = m.membershipType === 'both' ? 'Rent + Mess' : m.membershipType === 'rent_only' ? 'Rent Only' : 'Mess Only';
       
       msg += `👤 *${m.name}* [${typeStr}]:\n`;
@@ -144,10 +128,79 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
     return msg;
   };
 
+  // 1. Direct PDF Download Handler
+  const handleDownloadPDF = async (snap: MonthlySnapshot = currentSnapshot) => {
+    setIsGeneratingPdf(true);
+    try {
+      const { blob, filename } = generateRoomexPdfReport({
+        snapshot: snap,
+        settings,
+        members,
+        expenses,
+      });
+
+      await downloadPdfFile(blob, filename);
+      setDownloadSuccessToast(`Downloaded "${filename}" successfully!`);
+      setTimeout(() => setDownloadSuccessToast(null), 3500);
+    } catch (err) {
+      console.error('Error generating and downloading PDF:', err);
+      alert('Could not download PDF. Please try again.');
+    } finally {
+      setIsGeneratingPdf(false);
+    }
+  };
+
+  // 2. Direct PDF Share Handler (Sends actual PDF Document to WhatsApp / Telegram / Device apps)
+  const handleSharePdfDocument = async (snap: MonthlySnapshot = currentSnapshot) => {
+    setIsSharingPdf(true);
+    try {
+      const { blob, filename } = generateRoomexPdfReport({
+        snapshot: snap,
+        settings,
+        members,
+        expenses,
+      });
+
+      const summaryText = generateWhatsAppSummary(snap);
+      await sharePdfFile({
+        blob,
+        filename,
+        title: `ROOMEX Report - ${snap.monthYear}`,
+        text: summaryText,
+      });
+    } catch (err) {
+      console.error('Error sharing PDF document:', err);
+      // Fallback to text WhatsApp share
+      handleShareWhatsApp(snap);
+    } finally {
+      setIsSharingPdf(false);
+    }
+  };
+
+  // 3. WhatsApp Direct Text Share
   const handleShareWhatsApp = (snap: MonthlySnapshot = currentSnapshot) => {
     const txt = generateWhatsAppSummary(snap);
     const url = `https://wa.me/?text=${encodeURIComponent(txt)}`;
     window.open(url, '_blank');
+  };
+
+  // 4. Print / PDF Browser View
+  const handlePrintPDF = (snap: MonthlySnapshot = currentSnapshot) => {
+    try {
+      const { blob } = generateRoomexPdfReport({
+        snapshot: snap,
+        settings,
+        members,
+        expenses,
+      });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, '_blank');
+      if (!win) {
+        window.location.href = url;
+      }
+    } catch (err) {
+      console.error('Error opening print preview:', err);
+    }
   };
 
   const handleCopySummary = () => {
@@ -155,40 +208,6 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
     navigator.clipboard.writeText(txt);
     setCopiedText(true);
     setTimeout(() => setCopiedText(false), 2000);
-  };
-
-  // High-Resolution Colorful PDF Export
-  const handleExportPDF = async () => {
-    if (!printRef.current) return;
-    setIsGeneratingPdf(true);
-
-    try {
-      // Temporarily unhide printable container
-      const element = printRef.current;
-      element.style.display = 'block';
-
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
-      });
-
-      element.style.display = 'none';
-
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`ROOMEX_${settings.roomCode}_${currentSnapshot.monthYear.replace(/\s+/g, '_')}_Report.pdf`);
-    } catch (err) {
-      console.error('Error generating PDF:', err);
-      alert('Could not export PDF. Please try again.');
-    } finally {
-      setIsGeneratingPdf(false);
-    }
   };
 
   const handleSaveArchive = () => {
@@ -215,35 +234,64 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
             </p>
           </div>
 
-          {/* Export & Save Action Buttons (CSV option removed as requested) */}
+          {/* Export & Save Action Buttons */}
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={handleSaveArchive}
-              className="px-3.5 py-2 rounded-xl bg-indigo-950/70 hover:bg-indigo-900 text-indigo-300 border border-indigo-500/40 text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95"
+              className="px-3.5 py-2 rounded-xl bg-indigo-950/70 hover:bg-indigo-900 text-indigo-300 border border-indigo-500/40 text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
               title="Save current monthly data as persistent table"
             >
               <Archive className="w-4 h-4 text-indigo-400" />
               <span>Save Table Snapshot</span>
             </button>
 
+            {/* Direct Vector PDF Download */}
             <button
-              onClick={handleExportPDF}
+              onClick={() => handleDownloadPDF(currentSnapshot)}
               disabled={isGeneratingPdf}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 transition-all active:scale-95 disabled:opacity-50"
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
             >
               <Download className="w-4 h-4" />
               <span>{isGeneratingPdf ? 'Generating PDF...' : 'Download Colorful PDF'}</span>
             </button>
 
+            {/* PDF Share File to WhatsApp / Device */}
             <button
-              onClick={() => handleShareWhatsApp(currentSnapshot)}
-              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-600/30 transition-all active:scale-95"
+              onClick={() => handleSharePdfDocument(currentSnapshot)}
+              disabled={isSharingPdf}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-600/30 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+              title="Share PDF Document directly via WhatsApp or device apps"
             >
               <Share2 className="w-4 h-4" />
-              <span>Share to WhatsApp</span>
+              <span>{isSharingPdf ? 'Sharing...' : 'Share PDF to WhatsApp'}</span>
+            </button>
+
+            {/* Browser Print / Preview */}
+            <button
+              onClick={() => handlePrintPDF(currentSnapshot)}
+              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+              title="Preview / Print PDF in browser"
+            >
+              <Printer className="w-4 h-4" />
             </button>
           </div>
         </div>
+
+        {downloadSuccessToast && (
+          <div className="p-3 rounded-xl bg-indigo-950/60 border border-indigo-500/40 text-xs text-indigo-200 flex items-center justify-between gap-2 animate-in fade-in">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{downloadSuccessToast}</span>
+            </div>
+            <button
+              onClick={() => handlePrintPDF(currentSnapshot)}
+              className="text-xs text-indigo-400 hover:text-indigo-300 font-bold underline flex items-center gap-1"
+            >
+              <span>Open PDF</span>
+              <ExternalLink className="w-3 h-3" />
+            </button>
+          </div>
+        )}
 
         {saveSuccessMsg && (
           <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-xs text-emerald-300 flex items-center gap-2 animate-in fade-in">
@@ -294,7 +342,7 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
             {settings.currencySymbol}{currentSnapshot.totalRentExpense.toFixed(2)}
           </div>
           <div className="text-[10px] sm:text-[11px] text-slate-400 font-mono">
-            Equal split among roommates
+            Equal or custom split
           </div>
         </div>
 
@@ -333,7 +381,7 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
 
       </div>
 
-      {/* 3. Monthly Roommate Breakdown Table (Matches Colorful PDF View) */}
+      {/* 3. Monthly Roommate Breakdown Table */}
       <div className="bg-slate-900 border border-white/10 rounded-2xl p-5 shadow-lg space-y-4">
         <div className="flex items-center justify-between pb-3 border-b border-white/10">
           <div>
@@ -459,7 +507,7 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
               const toM = memberMap.get(debt.toMemberId);
               return (
                 <div 
-                  key={idx}
+                  key={`debt-${idx}-${debt.fromMemberId}-${debt.toMemberId}`}
                   className="p-3 bg-slate-950 border border-white/5 rounded-xl flex items-center justify-between text-xs"
                 >
                   <div className="flex items-center gap-2">
@@ -516,21 +564,29 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => setViewArchiveSnapshot(archive)}
-                    className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 text-xs font-semibold flex items-center gap-1 border border-white/10 transition-colors"
+                    className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 text-xs font-semibold flex items-center gap-1 border border-white/10 transition-colors cursor-pointer"
                   >
                     <Eye className="w-3.5 h-3.5" />
                     <span>View Table</span>
                   </button>
 
                   <button
-                    onClick={() => handleShareWhatsApp(archive)}
-                    className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold flex items-center gap-1 transition-colors"
+                    onClick={() => handleDownloadPDF(archive)}
+                    className="px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>PDF</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSharePdfDocument(archive)}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                   >
                     <Share2 className="w-3.5 h-3.5" />
-                    <span>WhatsApp</span>
+                    <span>Share</span>
                   </button>
                 </div>
               </div>
@@ -547,13 +603,23 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
             <h4 className="text-xs font-bold text-white">WhatsApp Summary Message Preview</h4>
           </div>
 
-          <button
-            onClick={handleCopySummary}
-            className="px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10 text-xs font-medium flex items-center gap-1.5 transition-all"
-          >
-            {copiedText ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copiedText ? 'Copied Text' : 'Copy Message'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleShareWhatsApp(currentSnapshot)}
+              className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Send WhatsApp</span>
+            </button>
+
+            <button
+              onClick={handleCopySummary}
+              className="px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-200 border border-white/10 text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer"
+            >
+              {copiedText ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedText ? 'Copied Text' : 'Copy Message'}</span>
+            </button>
+          </div>
         </div>
 
         <pre className="bg-slate-950 p-4 rounded-xl border border-white/10 text-xs font-mono text-slate-300 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
@@ -561,152 +627,7 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
         </pre>
       </div>
 
-      {/* 7. Hidden Printable HTML Canvas for Colorful PDF Generation */}
-      <div 
-        ref={printRef}
-        style={{ display: 'none', width: '800px', padding: '32px', backgroundColor: '#ffffff', color: '#0f172a', fontFamily: 'system-ui, sans-serif' }}
-      >
-        {/* Colorful PDF Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '3px solid #6366f1', paddingBottom: '16px', marginBottom: '20px' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <div style={{ width: '36px', height: '36px', borderRadius: '8px', background: 'linear-gradient(135deg, #6366f1, #38bdf8)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ffffff', fontWeight: 'bold', fontSize: '18px' }}>
-                RX
-              </div>
-              <h1 style={{ fontSize: '24px', fontWeight: '900', color: '#1e1b4b', margin: 0 }}>
-                ROOM<span style={{ color: '#6366f1' }}>EX</span>
-              </h1>
-            </div>
-            <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#64748b' }}>
-              Room Expense & Mess Management System
-            </p>
-          </div>
-
-          <div style={{ textAlign: 'right' }}>
-            <span style={{ display: 'inline-block', padding: '4px 12px', borderRadius: '16px', backgroundColor: '#e0e7ff', color: '#4338ca', fontWeight: 'bold', fontSize: '12px' }}>
-              {currentSnapshot.monthYear}
-            </span>
-            <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#1e293b', marginTop: '4px' }}>
-              Room: {settings.name} ({settings.roomCode})
-            </div>
-          </div>
-        </div>
-
-        {/* 3 Metrics Highlight Boxes */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '20px' }}>
-          <div style={{ padding: '12px', backgroundColor: '#f8fafc', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
-            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#64748b', fontWeight: 'bold' }}>Total Room Spend</div>
-            <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#0f172a', marginTop: '2px' }}>
-              {settings.currencySymbol}{currentSnapshot.totalSpend.toFixed(2)}
-            </div>
-          </div>
-
-          <div style={{ padding: '12px', backgroundColor: '#fff7ed', borderRadius: '10px', border: '1px solid #fed7aa' }}>
-            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#c2410c', fontWeight: 'bold' }}>Mess Food Pool</div>
-            <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#9a3412', marginTop: '2px' }}>
-              {settings.currencySymbol}{currentSnapshot.totalMessExpense.toFixed(2)}
-            </div>
-            <div style={{ fontSize: '10px', color: '#ea580c' }}>Rate: {settings.currencySymbol}{currentSnapshot.dailyMessRate.toFixed(2)} / day</div>
-          </div>
-
-          <div style={{ padding: '12px', backgroundColor: '#f0fdf4', borderRadius: '10px', border: '1px solid #bbf7d0' }}>
-            <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#15803d', fontWeight: 'bold' }}>Room Rent</div>
-            <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#166534', marginTop: '2px' }}>
-              {settings.currencySymbol}{currentSnapshot.totalRentExpense.toFixed(2)}
-            </div>
-          </div>
-        </div>
-
-        {/* Main Printable Table */}
-        <h3 style={{ fontSize: '13px', fontWeight: 'bold', color: '#1e293b', marginBottom: '8px' }}>
-          Roommate Expense Breakdown & Settlement Balance
-        </h3>
-        
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', marginBottom: '20px' }}>
-          <thead>
-            <tr style={{ backgroundColor: '#1e1b4b', color: '#ffffff' }}>
-              <th style={{ padding: '8px 10px', textAlign: 'left', borderRadius: '6px 0 0 0' }}>Roommate</th>
-              <th style={{ padding: '8px 10px', textAlign: 'left' }}>Membership</th>
-              <th style={{ padding: '8px 10px', textAlign: 'center' }}>Days</th>
-              <th style={{ padding: '8px 10px', textAlign: 'right' }}>Mess Bill</th>
-              <th style={{ padding: '8px 10px', textAlign: 'right' }}>Rent Share</th>
-              <th style={{ padding: '8px 10px', textAlign: 'right' }}>Total Paid</th>
-              <th style={{ padding: '8px 10px', textAlign: 'right', borderRadius: '0 6px 0 0' }}>Net Balance</th>
-            </tr>
-          </thead>
-          <tbody>
-            {currentSnapshot.memberSummaries.map((m, idx) => {
-              const isPlus = m.netBalance > 0.01;
-              const isMinus = m.netBalance < -0.01;
-              const rowBg = idx % 2 === 0 ? '#f8fafc' : '#ffffff';
-
-              return (
-                <tr key={m.memberId} style={{ backgroundColor: rowBg, borderBottom: '1px solid #e2e8f0' }}>
-                  <td style={{ padding: '8px 10px', fontWeight: 'bold', color: '#0f172a' }}>{m.name}</td>
-                  <td style={{ padding: '8px 10px', color: '#475569' }}>
-                    {m.membershipType === 'both' ? 'Rent + Mess' : m.membershipType === 'rent_only' ? 'Rent Only' : 'Mess Only'}
-                  </td>
-                  <td style={{ padding: '8px 10px', textAlign: 'center', color: '#334155' }}>
-                    {m.membershipType === 'rent_only' ? '-' : `${m.daysStayed}d`}
-                  </td>
-                  <td style={{ padding: '8px 10px', textAlign: 'right', color: '#334155' }}>
-                    {m.membershipType === 'rent_only' ? '$0.00' : `${settings.currencySymbol}${m.messBill.toFixed(2)}`}
-                  </td>
-                  <td style={{ padding: '8px 10px', textAlign: 'right', color: '#334155' }}>
-                    {settings.currencySymbol}{m.rentShare.toFixed(2)}
-                  </td>
-                  <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 'bold', color: '#0f172a' }}>
-                    {settings.currencySymbol}{m.totalPaid.toFixed(2)}
-                  </td>
-                  
-                  {/* Colorful Net Balance Column: Minus = Green, Plus = Blue */}
-                  <td style={{ padding: '8px 10px', textAlign: 'right' }}>
-                    {isPlus && (
-                      <span style={{ display: 'inline-block', padding: '3px 8px', borderRadius: '6px', backgroundColor: '#dbeafe', color: '#1e40af', fontWeight: 'bold', fontSize: '11px' }}>
-                        + {settings.currencySymbol}{m.netBalance.toFixed(2)} (Gets Back)
-                      </span>
-                    )}
-                    {isMinus && (
-                      <span style={{ display: 'inline-block', padding: '3px 8px', borderRadius: '6px', backgroundColor: '#dcfce7', color: '#15803d', fontWeight: 'bold', fontSize: '11px' }}>
-                        - {settings.currencySymbol}{Math.abs(m.netBalance).toFixed(2)} (To Pay / Owes)
-                      </span>
-                    )}
-                    {!isPlus && !isMinus && (
-                      <span style={{ color: '#64748b', fontSize: '11px' }}>Settled ($0.00)</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-
-        {/* Simplified Debts Section */}
-        {currentSnapshot.simplifiedDebts.length > 0 && (
-          <div style={{ marginBottom: '20px', padding: '12px', backgroundColor: '#f1f5f9', borderRadius: '8px' }}>
-            <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#1e293b', marginBottom: '6px' }}>Direct Settle-Up Transfers:</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '11px' }}>
-              {currentSnapshot.simplifiedDebts.map((d, i) => {
-                const fromM = memberMap.get(d.fromMemberId)?.name;
-                const toM = memberMap.get(d.toMemberId)?.name;
-                return (
-                  <div key={i} style={{ padding: '6px 10px', backgroundColor: '#ffffff', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
-                    <strong>{fromM}</strong> pays <strong>{toM}</strong>: <span style={{ color: '#6366f1', fontWeight: 'bold' }}>{settings.currencySymbol}{d.amount.toFixed(2)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Mandatory Developer Branding in Footer */}
-        <div style={{ borderTop: '1px solid #cbd5e1', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '10px', color: '#64748b' }}>
-          <div>Generated by ROOMEX App • Room: {settings.roomCode}</div>
-          <div style={{ fontWeight: 'bold', color: '#4f46e5' }}>App developed by sakeerputhan</div>
-        </div>
-      </div>
-
-      {/* 8. Archived Month Snapshot Modal Viewer */}
+      {/* 7. Archived Month Snapshot Modal Viewer */}
       {viewArchiveSnapshot && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
           <div className="bg-slate-900 border border-white/10 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-hidden shadow-2xl flex flex-col">
@@ -719,7 +640,7 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
               </div>
               <button
                 onClick={() => setViewArchiveSnapshot(null)}
-                className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-slate-400 hover:text-white"
+                className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -767,11 +688,19 @@ export const SummaryReports: React.FC<SummaryReportsProps> = ({
 
             <div className="p-4 border-t border-white/10 bg-slate-950 flex items-center justify-end gap-2">
               <button
-                onClick={() => handleShareWhatsApp(viewArchiveSnapshot)}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 shadow"
+                onClick={() => handleDownloadPDF(viewArchiveSnapshot)}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 shadow cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download PDF</span>
+              </button>
+
+              <button
+                onClick={() => handleSharePdfDocument(viewArchiveSnapshot)}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 shadow cursor-pointer"
               >
                 <Share2 className="w-3.5 h-3.5" />
-                <span>Share WhatsApp</span>
+                <span>Share PDF</span>
               </button>
             </div>
           </div>

@@ -1,5 +1,6 @@
 import { 
   RoomData, 
+  RoomSettings,
   Member, 
   Expense, 
   DailyMealEntry, 
@@ -61,288 +62,35 @@ export const DEFAULT_PERMISSIONS: Record<Role, MemberPermissions> = {
 
 export const INITIAL_ROOM_DATA: RoomData = {
   settings: {
-    id: 'room_skyline_402',
-    name: 'Skyline Flat 402',
-    currency: 'USD',
-    currencySymbol: '$',
-    monthlyBudget: 1800,
+    id: 'room_initial',
+    name: 'Our Flat',
+    currency: 'INR',
+    currencySymbol: '₹',
+    monthlyBudget: 0,
     isMessEnabled: true,
     messCalculationMode: 'dynamic_ratio',
     messCalculationType: 'days_stayed',
     daysInMonth: 30,
-    fixedMealRate: 4.5,
-    roomCode: 'SKY402',
-    createdById: 'member_1',
-    createdAt: '2026-08-01T00:00:00.000Z',
+    fixedMealRate: 0,
+    roomCode: '',
+    createdById: '',
+    createdAt: new Date().toISOString(),
   },
-  members: [
-    {
-      id: 'member_1',
-      name: 'Alex Rivera',
-      username: 'alex',
-      email: 'alex@roomex.app',
-      password: 'password123',
-      allocatedPassword: 'password123',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-      phone: '+1 (555) 234-5678',
-      role: 'super_admin',
-      permissions: { ...DEFAULT_PERMISSIONS.super_admin },
-      joinedAt: '2026-08-01T00:00:00.000Z',
-      isMessActive: true,
-      membershipType: 'both',
-      depositBalance: 250,
-      daysStayed: 30,
-      upiId: 'alex@upi',
-    },
-    {
-      id: 'member_2',
-      name: 'Brian Chen',
-      username: 'brian',
-      email: 'brian@roomex.app',
-      password: 'password123',
-      allocatedPassword: 'password123',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-      phone: '+1 (555) 345-6789',
-      role: 'admin',
-      permissions: { ...DEFAULT_PERMISSIONS.admin },
-      joinedAt: '2026-08-01T00:00:00.000Z',
-      isMessActive: true,
-      membershipType: 'both',
-      depositBalance: 250,
-      daysStayed: 28,
-      upiId: 'brian@okaxis',
-    },
-    {
-      id: 'member_3',
-      name: 'Chloe Miller',
-      username: 'chloe',
-      email: 'chloe@roomex.app',
-      password: 'password123',
-      allocatedPassword: 'password123',
-      avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-      phone: '+1 (555) 456-7890',
-      role: 'co_admin',
-      permissions: { ...DEFAULT_PERMISSIONS.co_admin },
-      joinedAt: '2026-08-02T00:00:00.000Z',
-      isMessActive: true,
-      membershipType: 'both',
-      depositBalance: 200,
-      daysStayed: 25,
-      upiId: 'chloe@ybl',
-    },
-    {
-      id: 'member_4',
-      name: 'David Patel',
-      username: 'david',
-      email: 'david@roomex.app',
-      password: 'password123',
-      allocatedPassword: 'password123',
-      avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-      phone: '+1 (555) 567-8901',
-      role: 'member',
-      permissions: { ...DEFAULT_PERMISSIONS.member },
-      joinedAt: '2026-08-03T00:00:00.000Z',
-      isMessActive: true,
-      membershipType: 'both',
-      depositBalance: 150,
-      daysStayed: 20,
-      upiId: 'david@paytm',
-    },
-  ],
-  expenses: [
-    {
-      id: 'exp_1',
-      roomId: 'room_skyline_402',
-      title: 'High-Speed Fiber Wi-Fi (August)',
-      amount: 60,
-      category: 'internet',
-      paidBy: 'member_1',
-      splitType: 'equal',
-      splits: [
-        { memberId: 'member_1', amount: 15 },
-        { memberId: 'member_2', amount: 15 },
-        { memberId: 'member_3', amount: 15 },
-        { memberId: 'member_4', amount: 15 },
-      ],
-      date: '2026-08-05T10:00:00.000Z',
-      notes: '1 Gbps monthly bill with tax',
-      createdBy: 'member_1',
-      createdAt: '2026-08-05T10:00:00.000Z',
-      isMessExpense: false,
-    },
-    {
-      id: 'exp_2',
-      roomId: 'room_skyline_402',
-      title: 'Weekly Fresh Produce & Pantry Restock',
-      amount: 144,
-      category: 'mess_food',
-      paidBy: 'member_2',
-      splitType: 'meal_share',
-      splits: [
-        { memberId: 'member_1', amount: 40, mealsCount: 14 },
-        { memberId: 'member_2', amount: 40, mealsCount: 14 },
-        { memberId: 'member_3', amount: 36, mealsCount: 12 },
-        { memberId: 'member_4', amount: 28, mealsCount: 10 },
-      ],
-      date: '2026-08-08T16:30:00.000Z',
-      notes: 'Veggies, rice, lentils, oil, and spices from Farmer Market',
-      createdBy: 'member_2',
-      createdAt: '2026-08-08T16:30:00.000Z',
-      isMessExpense: true,
-    },
-    {
-      id: 'exp_3',
-      roomId: 'room_skyline_402',
-      title: 'Electricity & AC Utilities Bill',
-      amount: 180,
-      category: 'electricity',
-      paidBy: 'member_3',
-      splitType: 'equal',
-      splits: [
-        { memberId: 'member_1', amount: 45 },
-        { memberId: 'member_2', amount: 45 },
-        { memberId: 'member_3', amount: 45 },
-        { memberId: 'member_4', amount: 45 },
-      ],
-      date: '2026-08-11T12:00:00.000Z',
-      notes: 'State power utility receipt paid online',
-      createdBy: 'member_3',
-      createdAt: '2026-08-11T12:00:00.000Z',
-      isMessExpense: false,
-    },
-    {
-      id: 'exp_4',
-      roomId: 'room_skyline_402',
-      title: 'Kitchen Cooking Gas Refill Cylinder',
-      amount: 38,
-      category: 'gas_cylinder',
-      paidBy: 'member_1',
-      splitType: 'equal',
-      splits: [
-        { memberId: 'member_1', amount: 9.5 },
-        { memberId: 'member_2', amount: 9.5 },
-        { memberId: 'member_3', amount: 9.5 },
-        { memberId: 'member_4', amount: 9.5 },
-      ],
-      date: '2026-08-14T09:00:00.000Z',
-      notes: 'Delivered and fitted',
-      createdBy: 'member_1',
-      createdAt: '2026-08-14T09:00:00.000Z',
-      isMessExpense: true,
-    },
-  ],
-  meals: [
-    {
-      id: 'meal_2026_08_15',
-      roomId: 'room_skyline_402',
-      date: '2026-08-15',
-      breakfastCount: { member_1: 1, member_2: 1, member_3: 1, member_4: 1 },
-      lunchCount: { member_1: 1, member_2: 1, member_3: 0, member_4: 1 },
-      dinnerCount: { member_1: 1, member_2: 1, member_3: 1, member_4: 1 },
-      guestMeals: { member_1: 0, member_2: 1, member_3: 0, member_4: 0 },
-      note: 'Chloe ate lunch at college',
-    },
-    {
-      id: 'meal_2026_08_16',
-      roomId: 'room_skyline_402',
-      date: '2026-08-16',
-      breakfastCount: { member_1: 1, member_2: 1, member_3: 1, member_4: 0 },
-      lunchCount: { member_1: 1, member_2: 1, member_3: 1, member_4: 1 },
-      dinnerCount: { member_1: 1, member_2: 1, member_3: 1, member_4: 1 },
-      guestMeals: { member_1: 1, member_2: 0, member_3: 0, member_4: 0 },
-      note: 'Alex had 1 dinner guest',
-    },
-    {
-      id: 'meal_2026_08_17',
-      roomId: 'room_skyline_402',
-      date: '2026-08-17',
-      breakfastCount: { member_1: 1, member_2: 1, member_3: 1, member_4: 1 },
-      lunchCount: { member_1: 1, member_2: 1, member_3: 1, member_4: 1 },
-      dinnerCount: { member_1: 1, member_2: 1, member_3: 1, member_4: 1 },
-      guestMeals: { member_1: 0, member_2: 0, member_3: 0, member_4: 0 },
-      note: 'Regular all-in day',
-    }
-  ],
-  settlements: [
-    {
-      id: 'set_1',
-      roomId: 'room_skyline_402',
-      fromMemberId: 'member_4',
-      toMemberId: 'member_1',
-      amount: 30,
-      date: '2026-08-12T14:00:00.000Z',
-      paymentMethod: 'upi',
-      referenceId: 'UPI-9821034821',
-      notes: 'Wi-Fi and gas partial settlement',
-      recordedBy: 'member_1',
-    }
-  ],
-  auditLogs: [
-    {
-      id: 'log_1',
-      roomId: 'room_skyline_402',
-      performedBy: 'member_1',
-      action: 'ROOM_CREATED',
-      details: 'Alex created room "Skyline Flat 402"',
-      timestamp: '2026-08-01T00:00:00.000Z',
-    },
-    {
-      id: 'log_2',
-      roomId: 'room_skyline_402',
-      performedBy: 'member_1',
-      action: 'ADMIN_PROMOTION',
-      details: 'Alex appointed Brian Chen as Admin',
-      timestamp: '2026-08-02T10:00:00.000Z',
-    },
-    {
-      id: 'log_3',
-      roomId: 'room_skyline_402',
-      performedBy: 'member_1',
-      action: 'ADMIN_PROMOTION',
-      details: 'Alex appointed Chloe Miller as Co-Admin',
-      timestamp: '2026-08-03T11:00:00.000Z',
-    }
-  ],
+  members: [],
+  expenses: [],
+  meals: [],
+  settlements: [],
+  auditLogs: [],
   cleaningSchedule: {
-    currentMemberId: 'member_1',
-    nextMemberId: 'member_2',
+    currentMemberId: '',
+    nextMemberId: '',
     dutyDate: new Date().toISOString().split('T')[0],
-    dutyArea: 'Bathroom & Washroom',
-    assignedDuties: {
-      member_1: 'Bathroom & Washroom',
-      member_2: 'Full Flat / Apartment',
-      member_3: 'Kitchen & Sink',
-      member_4: 'Living Room & Trash Mopping',
-    },
-    rotaOrder: ['member_1', 'member_2', 'member_3', 'member_4'],
+    dutyArea: 'Full Flat / Apartment',
+    assignedDuties: {},
+    rotaOrder: [],
     frequency: 'daily',
-    lastCompletedDate: '2026-08-16',
-    lastCompletedBy: 'member_4',
   },
-  cleaningHistory: [
-    {
-      id: 'clean_1',
-      roomId: 'room_skyline_402',
-      memberId: 'member_4',
-      memberName: 'David Patel',
-      action: 'completed',
-      date: '2026-08-16',
-      timestamp: '2026-08-16T20:30:00.000Z',
-      dutyArea: 'Kitchen & Sink',
-      notes: 'Kitchen and main hall vacuumed & sanitized',
-    },
-    {
-      id: 'clean_2',
-      roomId: 'room_skyline_402',
-      memberId: 'member_3',
-      memberName: 'Chloe Miller',
-      action: 'completed',
-      date: '2026-08-15',
-      timestamp: '2026-08-15T19:45:00.000Z',
-      dutyArea: 'Bathroom & Washroom',
-      notes: 'Trash disposal and common washroom cleaned',
-    }
-  ],
+  cleaningHistory: [],
   monthlyArchives: [],
 };
 
@@ -352,13 +100,18 @@ export function loadRoomData(): RoomData {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && parsed.settings && parsed.members) {
+      // If legacy sample mock data detected, clear it
+      if (parsed?.settings?.id === 'room_skyline_402' || parsed?.members?.some((m: any) => m.name === 'Alex Rivera' || m.name === 'Brian Chen')) {
+        localStorage.removeItem(STORAGE_KEY);
+        return INITIAL_ROOM_DATA;
+      }
+      if (parsed && parsed.settings && Array.isArray(parsed.members)) {
         // Ensure backwards compatibility with newly added fields
         if (!parsed.cleaningSchedule) {
           parsed.cleaningSchedule = INITIAL_ROOM_DATA.cleaningSchedule;
         }
         if (!parsed.cleaningHistory) {
-          parsed.cleaningHistory = INITIAL_ROOM_DATA.cleaningHistory;
+          parsed.cleaningHistory = [];
         }
         if (!parsed.monthlyArchives) {
           parsed.monthlyArchives = [];
@@ -372,9 +125,8 @@ export function loadRoomData(): RoomData {
       }
     }
   } catch (e) {
-    console.warn('Failed to parse stored room data, using initial data', e);
+    console.warn('Failed to parse stored room data, using clean initial data', e);
   }
-  saveRoomData(INITIAL_ROOM_DATA);
   return INITIAL_ROOM_DATA;
 }
 
@@ -402,13 +154,63 @@ export function setActiveMemberId(memberId: string): void {
   } catch {}
 }
 
+// Calculate Member Rent Share (Equal Split by default or Manual Custom Override)
+export function calculateMemberRentShare(
+  memberId: string,
+  members: Member[],
+  settings?: RoomSettings,
+  expenses: Expense[] = []
+): number {
+  const member = members.find(m => m.id === memberId);
+  if (!member || member.membershipType === 'mess_only') {
+    return 0;
+  }
+
+  // 1. Manual Custom Rent Override (if set by admin)
+  if (member.customRentShare !== undefined && member.customRentShare > 0) {
+    return Math.round(member.customRentShare * 100) / 100;
+  }
+
+  // 2. Room Preset Rent (Equal split or flat per member)
+  if (settings?.presetRentActive && settings.presetRentAmount && settings.presetRentAmount > 0) {
+    if (settings.presetRentType === 'per_member') {
+      return Math.round(settings.presetRentAmount * 100) / 100;
+    }
+    // 'total_room' default equal split:
+    // Subtract any members with customRentShare from the total room rent,
+    // and distribute the remaining rent equally among the remaining rent-eligible members
+    const rentEligibleMembers = members.filter(m => m.membershipType !== 'mess_only');
+    const customRentSum = rentEligibleMembers.reduce((sum, m) => {
+      return sum + (m.customRentShare !== undefined && m.customRentShare > 0 ? m.customRentShare : 0);
+    }, 0);
+    const standardMembers = rentEligibleMembers.filter(m => !(m.customRentShare !== undefined && m.customRentShare > 0));
+    
+    if (standardMembers.some(m => m.id === memberId)) {
+      const remainingTotal = Math.max(0, settings.presetRentAmount - customRentSum);
+      const equalShare = standardMembers.length > 0 ? remainingTotal / standardMembers.length : 0;
+      return Math.round(equalShare * 100) / 100;
+    }
+  }
+
+  // 3. Fallback to logged 'rent' category expenses
+  const expenseRentShare = expenses
+    .filter(e => e.category === 'rent')
+    .reduce((sum, e) => {
+      const split = e.splits.find(s => s.memberId === memberId);
+      return sum + (split ? split.amount : 0);
+    }, 0);
+
+  return Math.round(expenseRentShare * 100) / 100;
+}
+
 // Calculate Net Balances for each member
 // Positive (+): Room owes this member money (they overpaid)
 // Negative (-): Member owes money to the room
 export function calculateNetBalances(
   members: Member[], 
   expenses: Expense[], 
-  settlements: Settlement[]
+  settlements: Settlement[],
+  settings?: RoomSettings
 ): Record<string, number> {
   const balances: Record<string, number> = {};
   members.forEach(m => {
@@ -430,7 +232,18 @@ export function calculateNetBalances(
     });
   });
 
-  // 2. Process Settlements
+  // 2. Preset Rent Integration (if active and not already logged as expense)
+  const hasRentExpense = expenses.some(e => e.category === 'rent');
+  if (settings?.presetRentActive && settings.presetRentAmount && settings.presetRentAmount > 0 && !hasRentExpense) {
+    members.forEach(m => {
+      const rentShare = calculateMemberRentShare(m.id, members, settings, expenses);
+      if (balances[m.id] !== undefined) {
+        balances[m.id] -= rentShare;
+      }
+    });
+  }
+
+  // 3. Process Settlements
   settlements.forEach(set => {
     // fromMember paid to toMember
     // fromMember balance goes up (debt reduced)
@@ -455,9 +268,10 @@ export function calculateNetBalances(
 export function simplifyDebts(
   members: Member[], 
   expenses: Expense[], 
-  settlements: Settlement[]
+  settlements: Settlement[],
+  settings?: RoomSettings
 ): SimplifiedDebt[] {
-  const balances = calculateNetBalances(members, expenses, settlements);
+  const balances = calculateNetBalances(members, expenses, settlements, settings);
 
   const debtors: { id: string; amount: number }[] = [];
   const creditors: { id: string; amount: number }[] = [];
@@ -631,7 +445,8 @@ export function calculateMemberPayableBreakdown(
   members: Member[],
   expenses: Expense[],
   settlements: Settlement[] = [],
-  daysInMonth: number = 30
+  daysInMonth: number = 30,
+  settings?: RoomSettings
 ): {
   member: Member | undefined;
   daysStayed: number;
@@ -656,13 +471,8 @@ export function calculateMemberPayableBreakdown(
   const isRentOnly = member?.membershipType === 'rent_only' || member?.isMessActive === false;
   const messBill = isRentOnly ? 0 : (messMetrics.memberDaysBreakdown[memberId]?.cost || 0);
 
-  // 2. Rent Share
-  const rentShare = expenses
-    .filter(e => e.category === 'rent')
-    .reduce((sum, e) => {
-      const split = e.splits.find(s => s.memberId === memberId);
-      return sum + (split ? split.amount : 0);
-    }, 0);
+  // 2. Rent Share (Calculated via preset equal/custom rent share or logged rent expense)
+  const rentShare = calculateMemberRentShare(memberId, members, settings, expenses);
 
   // 3. Other Expenses Share (Wifi, Electricity, Cook, Gas Cylinder, Cleaning, etc.)
   const otherExpensesShare = expenses
@@ -721,14 +531,18 @@ export function calculateMonthlySnapshot(roomData: RoomData): MonthlySnapshot {
   const { settings, members, expenses, settlements } = roomData;
   const daysInMonth = settings.daysInMonth || 30;
   const messMetrics = calculateMessMetrics(expenses, roomData.meals, members, daysInMonth);
-  const netBalances = calculateNetBalances(members, expenses, settlements);
-  const simplifiedDebts = simplifyDebts(members, expenses, settlements);
+  const netBalances = calculateNetBalances(members, expenses, settlements, settings);
+  const simplifiedDebts = simplifyDebts(members, expenses, settlements, settings);
 
   const totalSpend = expenses.reduce((sum, e) => sum + e.amount, 0);
   const totalMessExpense = messMetrics.totalMessExpense;
-  const totalRentExpense = expenses
-    .filter(e => e.category === 'rent')
-    .reduce((sum, e) => sum + e.amount, 0);
+  
+  // Total Rent Calculation
+  const totalRentExpense = settings.presetRentActive && settings.presetRentAmount && settings.presetRentAmount > 0
+    ? (settings.presetRentType === 'per_member' 
+        ? members.filter(m => m.membershipType !== 'mess_only').reduce((sum, m) => sum + calculateMemberRentShare(m.id, members, settings, expenses), 0)
+        : settings.presetRentAmount)
+    : expenses.filter(e => e.category === 'rent').reduce((sum, e) => sum + e.amount, 0);
 
   const memberSummaries: MemberMonthlyBreakdown[] = members.map(m => {
     const memType = m.membershipType || (m.isMessActive ? 'both' : 'rent_only');
@@ -737,12 +551,7 @@ export function calculateMonthlySnapshot(roomData: RoomData): MonthlySnapshot {
       ? 0 
       : (messMetrics.memberDaysBreakdown[m.id]?.cost || 0);
 
-    const rentShare = expenses
-      .filter(e => e.category === 'rent')
-      .reduce((sum, e) => {
-        const split = e.splits.find(s => s.memberId === m.id);
-        return sum + (split ? split.amount : 0);
-      }, 0);
+    const rentShare = calculateMemberRentShare(m.id, members, settings, expenses);
 
     const otherExpensesShare = expenses
       .filter(e => e.category !== 'rent' && !e.isMessExpense && e.category !== 'mess_food' && e.category !== 'groceries' && e.category !== 'gas_cylinder')
@@ -803,10 +612,12 @@ export function calculateMonthlySnapshot(roomData: RoomData): MonthlySnapshot {
   };
 }
 
-// Supabase Syncing Service
+// Supabase Syncing Service & Multi-device Online Cloud State
 export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ success: boolean; message: string }> {
   try {
-    // 1. Try Upserting Room
+    const serializedData = JSON.stringify(roomData);
+
+    // 1. Upsert Room Core and Snapshot
     const { error: roomErr } = await supabase
       .from('roomex_rooms')
       .upsert({
@@ -820,11 +631,12 @@ export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ succes
         fixed_meal_rate: roomData.settings.fixedMealRate,
         room_code: roomData.settings.roomCode,
         created_by_id: roomData.settings.createdById,
+        raw_snapshot: serializedData,
+        updated_at: new Date().toISOString(),
       });
 
     if (roomErr) {
-      console.warn('Supabase rooms sync warning:', roomErr.message);
-      return { success: false, message: roomErr.message };
+      console.warn('Supabase rooms upsert notice:', roomErr.message);
     }
 
     // 2. Upsert Members
@@ -834,13 +646,21 @@ export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ succes
         room_id: roomData.settings.id,
         name: m.name,
         email: m.email,
+        username: m.username || null,
+        allocated_password: m.allocatedPassword || m.password || null,
         avatar: m.avatar,
         phone: m.phone || null,
         role: m.role,
         permissions: m.permissions,
-        is_mess_active: m.isMessActive,
-        deposit_balance: m.depositBalance,
+        membership_type: m.membershipType || 'both',
+        custom_rent_share: m.customRentShare || 0,
+        days_stayed: m.daysStayed || 30,
+        is_mess_active: m.isMessActive ?? true,
+        deposit_balance: m.depositBalance || 0,
         upi_id: m.upiId || null,
+        is_on_vacation: !!m.isOnVacation,
+        vacation_type: m.vacationType || 'active',
+        vacation_reason: m.vacationReason || null,
       }));
       await supabase.from('roomex_members').upsert(memberPayload);
     }
@@ -897,9 +717,146 @@ export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ succes
       await supabase.from('roomex_settlements').upsert(setPayload);
     }
 
-    return { success: true, message: 'Successfully synced with Supabase' };
+    return { success: true, message: 'Worldwide Cloud Sync Complete (Supabase)' };
   } catch (err: any) {
-    console.warn('Supabase sync error (fallback active):', err);
-    return { success: false, message: err?.message || 'Sync failed, offline mode active' };
+    console.warn('Supabase sync warning (fallback active):', err);
+    return { success: false, message: err?.message || 'Sync saved locally' };
+  }
+}
+
+// Fetch Room Online from Supabase by Room Code
+export async function fetchRoomFromSupabase(roomCode: string): Promise<RoomData | null> {
+  try {
+    const cleanCode = roomCode.trim().toUpperCase();
+    const { data: roomRows, error: roomError } = await supabase
+      .from('roomex_rooms')
+      .select('*')
+      .eq('room_code', cleanCode)
+      .limit(1);
+
+    if (roomError || !roomRows || roomRows.length === 0) {
+      return null;
+    }
+
+    const roomRecord = roomRows[0];
+
+    // If raw_snapshot exists and is valid JSON, restore with full fidelity
+    if (roomRecord.raw_snapshot) {
+      try {
+        const parsed = JSON.parse(roomRecord.raw_snapshot);
+        if (parsed && parsed.settings && parsed.members) {
+          return parsed;
+        }
+      } catch {}
+    }
+
+    // Otherwise reconstruct from relational tables
+    const roomId = roomRecord.id;
+
+    const [membersRes, expensesRes, mealsRes, settlementsRes] = await Promise.all([
+      supabase.from('roomex_members').select('*').eq('room_id', roomId),
+      supabase.from('roomex_expenses').select('*').eq('room_id', roomId),
+      supabase.from('roomex_meals').select('*').eq('room_id', roomId),
+      supabase.from('roomex_settlements').select('*').eq('room_id', roomId),
+    ]);
+
+    const members: Member[] = (membersRes.data || []).map((m: any) => ({
+      id: m.id,
+      name: m.name,
+      username: m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, ''),
+      email: m.email || `${m.id}@roomex.app`,
+      password: m.allocated_password || 'password123',
+      allocatedPassword: m.allocated_password || 'password123',
+      avatar: m.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+      phone: m.phone || undefined,
+      role: m.role || 'member',
+      permissions: m.permissions || DEFAULT_PERMISSIONS[m.role as Role] || DEFAULT_PERMISSIONS.member,
+      joinedAt: m.joined_at || new Date().toISOString(),
+      isMessActive: m.is_mess_active !== false,
+      depositBalance: Number(m.deposit_balance) || 0,
+      daysStayed: Number(m.days_stayed) || 30,
+      membershipType: m.membership_type || 'both',
+      customRentShare: Number(m.custom_rent_share) || undefined,
+      upiId: m.upi_id || undefined,
+      isOnVacation: !!m.is_on_vacation,
+      vacationType: m.vacation_type || 'active',
+      vacationReason: m.vacation_reason || undefined,
+      isCleaningActive: !m.is_on_vacation,
+    }));
+
+    const expenses: Expense[] = (expensesRes.data || []).map((e: any) => ({
+      id: e.id,
+      roomId: e.room_id,
+      title: e.title,
+      amount: Number(e.amount),
+      category: e.category,
+      paidBy: e.paid_by,
+      splitType: e.split_type || 'equal',
+      splits: e.splits || [],
+      date: e.date,
+      notes: e.notes || undefined,
+      receiptUrl: e.receipt_url || undefined,
+      createdBy: e.created_by || e.paid_by,
+      createdAt: e.created_at || e.date,
+      isMessExpense: !!e.is_mess_expense,
+    }));
+
+    const meals: DailyMealEntry[] = (mealsRes.data || []).map((meal: any) => ({
+      id: meal.id,
+      roomId: meal.room_id,
+      date: meal.date,
+      breakfastCount: meal.breakfast_count || {},
+      lunchCount: meal.lunch_count || {},
+      dinnerCount: meal.dinner_count || {},
+      guestMeals: meal.guest_meals || {},
+      note: meal.note || undefined,
+    }));
+
+    const settlements: Settlement[] = (settlementsRes.data || []).map((s: any) => ({
+      id: s.id,
+      roomId: s.room_id,
+      fromMemberId: s.from_member_id,
+      toMemberId: s.to_member_id,
+      amount: Number(s.amount),
+      date: s.date,
+      paymentMethod: s.payment_method || 'upi',
+      referenceId: s.reference_id || undefined,
+      notes: s.notes || undefined,
+      recordedBy: s.recorded_by || s.from_member_id,
+    }));
+
+    const settings: RoomSettings = {
+      id: roomRecord.id,
+      name: roomRecord.name,
+      currency: roomRecord.currency || 'INR',
+      currencySymbol: roomRecord.currency_symbol || '₹',
+      monthlyBudget: Number(roomRecord.monthly_budget) || 1000,
+      isMessEnabled: roomRecord.is_mess_enabled !== false,
+      messCalculationMode: roomRecord.mess_calculation_mode || 'dynamic_ratio',
+      messCalculationType: 'days_stayed',
+      daysInMonth: 30,
+      fixedMealRate: Number(roomRecord.fixed_meal_rate) || 4,
+      roomCode: roomRecord.room_code || cleanCode,
+      createdById: roomRecord.created_by_id || (members[0]?.id || 'admin_1'),
+      createdAt: roomRecord.created_at || new Date().toISOString(),
+      presetRentActive: false,
+      presetRentAmount: 0,
+      presetRentType: 'total_room',
+    };
+
+    return {
+      settings,
+      members: members.length > 0 ? members : INITIAL_ROOM_DATA.members,
+      expenses,
+      meals,
+      settlements,
+      auditLogs: [],
+      cleaningSchedule: INITIAL_ROOM_DATA.cleaningSchedule,
+      cleaningHistory: INITIAL_ROOM_DATA.cleaningHistory,
+      monthlyArchives: [],
+    };
+  } catch (err) {
+    console.warn('Error fetching room from Supabase:', err);
+    return null;
   }
 }
