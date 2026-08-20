@@ -11,7 +11,8 @@ import {
   CheckCircle2, 
   AlertCircle,
   Database,
-  LogOut
+  LogOut,
+  Camera
 } from 'lucide-react';
 import { Member, RoomSettings, Role } from '../types';
 import { SupabaseSyncStatus } from '../lib/supabase';
@@ -21,10 +22,11 @@ interface NavbarProps {
   settings: RoomSettings;
   members: Member[];
   activeMember: Member;
-  onSelectActiveMember: (memberId: string) => void;
+  onSelectActiveMember?: (memberId: string) => void;
   onOpenAddExpense: () => void;
   onOpenAdminModal: () => void;
   onOpenRoomSettings: () => void;
+  onOpenProfilePhoto?: () => void;
   supabaseStatus: SupabaseSyncStatus;
   onManualSync: () => void;
   canInstallPWA: boolean;
@@ -36,10 +38,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   settings,
   members,
   activeMember,
-  onSelectActiveMember,
   onOpenAddExpense,
   onOpenAdminModal,
   onOpenRoomSettings,
+  onOpenProfilePhoto,
   supabaseStatus,
   onManualSync,
   canInstallPWA,
@@ -128,29 +130,32 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Active User Switcher (Mobile Touch-Optimized) */}
-            <div className="relative flex items-center bg-slate-900 border border-white/10 rounded-xl p-0.5 sm:p-1">
-              <div className="flex items-center gap-1.5 pl-1 pr-1">
-                <img 
-                  src={activeMember.avatar} 
-                  alt={activeMember.name} 
-                  className="w-6 h-6 sm:w-7 sm:h-7 rounded-full object-cover border border-white/20 shrink-0" 
-                />
-                <select
-                  value={activeMember.id}
-                  onChange={(e) => onSelectActiveMember(e.target.value)}
-                  className="bg-transparent text-xs text-slate-200 font-medium py-1 pl-0.5 pr-1 outline-none cursor-pointer hover:text-white max-w-[85px] sm:max-w-[130px] truncate"
-                  title="Switch acting user"
-                >
-                  {members.map((m) => (
-                    <option key={m.id} value={m.id} className="bg-slate-900 text-slate-200">
-                      {m.name.split(' ')[0]} ({m.role.replace('_', ' ')})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="hidden xl:block pr-1">
-                {getRoleBadge(activeMember.role)}
+            {/* Single Authenticated User Profile Card (No member switcher dropdown) */}
+            <div 
+              onClick={onOpenProfilePhoto}
+              className="relative flex items-center bg-slate-900/90 hover:bg-slate-800 border border-white/10 hover:border-indigo-500/40 rounded-xl p-1 sm:px-2 transition-all cursor-pointer group"
+              title="Click to update your Profile Photo"
+            >
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <img 
+                    src={activeMember.avatar} 
+                    alt={activeMember.name} 
+                    className="w-7 h-7 sm:w-8 sm:h-8 rounded-full object-cover border border-indigo-400/50 shrink-0" 
+                  />
+                  <div className="absolute -bottom-0.5 -right-0.5 bg-indigo-600 rounded-full p-0.5 text-white border border-slate-900 shadow-sm opacity-80 group-hover:opacity-100">
+                    <Camera className="w-2.5 h-2.5" />
+                  </div>
+                </div>
+
+                <div className="flex flex-col text-left pr-1">
+                  <span className="text-xs font-bold text-white max-w-[90px] sm:max-w-[140px] truncate">
+                    {activeMember.name}
+                  </span>
+                  <span className="text-[9px] uppercase font-mono text-indigo-300 font-semibold tracking-wider">
+                    {activeMember.role.replace('_', ' ')}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -158,7 +163,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {isAdminOrSuper && (
               <button
                 onClick={onOpenAdminModal}
-                className="p-2 sm:px-3 sm:py-2 rounded-xl flex items-center gap-1.5 text-xs font-semibold transition-all min-h-[36px] min-w-[36px] justify-center bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20"
+                className="p-2 sm:px-3 sm:py-2 rounded-xl flex items-center gap-1.5 text-xs font-semibold transition-all min-h-[36px] min-w-[36px] justify-center bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 cursor-pointer"
                 title="Admin & Role Delegation (Super Admin / Admin Only)"
               >
                 <ShieldAlert className="w-4 h-4 text-amber-400" />
@@ -169,7 +174,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Add Expense Desktop Button */}
             <button
               onClick={onOpenAddExpense}
-              className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all active:scale-95 min-h-[36px]"
+              className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all active:scale-95 min-h-[36px] cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               <span>Add Expense</span>
@@ -179,7 +184,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {isAdminOrSuper && (
               <button
                 onClick={onOpenRoomSettings}
-                className="p-2 rounded-xl bg-white/[0.03] border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 hover:border-white/20 transition-colors min-h-[36px] min-w-[36px] flex items-center justify-center"
+                className="p-2 rounded-xl bg-white/[0.03] border border-white/10 text-slate-400 hover:text-white hover:bg-white/5 hover:border-white/20 transition-colors min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
                 title="Room Settings (Super Admin & Admin Only)"
               >
                 <Settings className="w-4 h-4" />
@@ -190,7 +195,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {onSignOut && (
               <button
                 onClick={onSignOut}
-                className="p-2 rounded-xl bg-white/[0.03] border border-white/10 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30 transition-colors min-h-[36px] min-w-[36px] flex items-center justify-center"
+                className="p-2 rounded-xl bg-white/[0.03] border border-white/10 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30 transition-colors min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
                 title="Sign Out / Switch Account"
               >
                 <LogOut className="w-4 h-4" />

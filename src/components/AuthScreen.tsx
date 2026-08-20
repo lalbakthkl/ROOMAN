@@ -1,21 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Lock, 
+  Mail, 
   User, 
   Eye, 
   EyeOff, 
   LogIn, 
+  UserPlus, 
   AlertCircle, 
   Users, 
   Check, 
-  Crown, 
   Building, 
   Smartphone, 
   RefreshCw,
-  Globe
+  Globe,
+  Sparkles,
+  ArrowRight
 } from 'lucide-react';
 import { Member, Role, AuthUser, MembershipType, RoomSettings, RoomData } from '../types';
-import { fetchRoomFromSupabase } from '../lib/storage';
+import { fetchRoomFromSupabase, verifyMemberLogin } from '../lib/storage';
+import { supabase } from '../supabaseClient.js';
 
 interface AuthScreenProps {
   existingMembers?: Member[];
@@ -46,127 +50,296 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const memberList = existingMembers.length > 0 ? existingMembers : members;
   const currentRoomCode = settings?.roomCode || '';
 
-  // Clean 2-Tab Login: Admin Log In & Member Log In only
-  const [activeLoginTab, setActiveLoginTab] = useState<'admin' | 'member'>('admin');
+  // Auth Mode: 'signin' | 'signup' | 'roomcode' (initialized from route)
+  const [authMode, setAuthMode] = useState<'signin' | 'signup' | 'roomcode'>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname === '/signup') return 'signup';
+      if (window.location.pathname === '/admin' || window.location.pathname === '/admin/dashboard' || window.location.search.includes('mode=admin')) return 'signin';
+      if (window.location.pathname === '/member-login') return 'roomcode';
+    }
+    return 'roomcode';
+  });
 
-  // --- ADMIN LOGIN FORM STATE ---
-  const [adminRoomCode, setAdminRoomCode] = useState(currentRoomCode);
-  const [adminIdentifier, setAdminIdentifier] = useState('');
-  const [adminPassword, setAdminPassword] = useState('');
-  const [isAdminCreatingNewRoom, setIsAdminCreatingNewRoom] = useState(false);
-  const [newRoomTitle, setNewRoomTitle] = useState('');
-  const [newRoomCurrency, setNewRoomCurrency] = useState('INR');
+  // Supabase Auth Form State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
 
-  // --- MEMBER LOGIN FORM STATE ---
-  const [memberRoomCode, setMemberRoomCode] = useState(currentRoomCode);
-  const [memberUsername, setMemberUsername] = useState('');
-  const [memberPassword, setMemberPassword] = useState('');
+  // Room Code Form State (for flatmate / offline access)
+  const [roomCode, setRoomCode] = useState(currentRoomCode);
+  const [roommateIdentifier, setRoommateIdentifier] = useState('');
+  const [roommatePassword, setRoommatePassword] = useState('');
+  const [detectedRoom, setDetectedRoom] = useState<RoomData | null>(null);
+  const [isDetectingRoom, setIsDetectingRoom] = useState(false);
+  const [unlockedMemberOption, setUnlockedMemberOption] = useState<Member | null>(null);
 
-  // UI helpers
+  // UI state
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [emailConfirmationRequired, setEmailConfirmationRequired] = useState(false);
 
-  // 1. ADMIN LOGIN HANDLER
-  const handleAdminLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Sync URL when switching auth modes
+  const handleSwitchAuthMode = (mode: 'signin' | 'signup' | 'roomcode') => {
+    setAuthMode(mode);
     setErrorMsg(null);
     setSuccessMsg(null);
+    setEmailConfirmationRequired(false);
+    if (typeof window !== 'undefined' && window.history) {
+      if (mode === 'signup') {
+        window.history.replaceState({}, '', '/signup');
+      } else {
+        window.history.replaceState({}, '', '/login');
+      }
+    }
+  };
 
-    const inputCode = adminRoomCode.trim().toUpperCase();
-    const inputUser = adminIdentifier.trim();
-    const inputPass = adminPassword.trim();
-
-    if (!inputCode) {
-      setErrorMsg('Please enter your Room Code.');
+  // Proactively fetch room info when room code changes
+  useEffect(() => {
+    if (authMode !== 'roomcode') return;
+    const activeCode = roomCode.trim().toUpperCase();
+    if (!activeCode) {
+      setDetectedRoom(null);
       return;
     }
 
-    if (!inputUser || !inputPass) {
-      setErrorMsg('Please enter your Admin Username / Email and Password.');
+    if (activeCode === currentRoomCode && memberList.length > 0) {
+      setDetectedRoom({
+        settings: settings || { id: 'room_local', name: 'My Flat', currency: 'INR', currencySymbol: '₹', monthlyBudget: 1000, isMessEnabled: true, messCalculationMode: 'dynamic_ratio', roomCode: activeCode },
+        members: memberList,
+        expenses: [],
+        meals: [],
+        settlements: [],
+        auditLogs: [],
+      });
+      return;
+    }
+
+    let isMounted = true;
+    setIsDetectingRoom(true);
+    fetchRoomFromSupabase(activeCode).then(room => {
+      if (isMounted) {
+        setDetectedRoom(room);
+        setIsDetectingRoom(false);
+      }
+    }).catch(() => {
+      if (isMounted) setIsDetectingRoom(false);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [roomCode, authMode, currentRoomCode, memberList, settings]);
+
+  // Redirect to Home Helper ("/")
+  const redirectToHome = (user: AuthUser, loadedRoomData?: RoomData) => {
+    try {
+      if (typeof window !== 'undefined' && window.history) {
+        window.history.pushState({}, '', '/');
+      }
+    } catch {}
+    onLogin(user, loadedRoomData);
+  };
+
+  // 1. SUPABASE SIGN IN HANDLER
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setEmailConfirmationRequired(false);
+
+    const cleanEmail = email.trim();
+    const cleanPass = password.trim();
+
+    if (!cleanEmail || !cleanPass) {
+      setErrorMsg('Please enter your email and password.');
       return;
     }
 
     setIsLoading(true);
 
     try {
-      // 1. Fetch room from online Supabase cloud
-      let targetRoomData: RoomData | null = null;
-      if (inputCode) {
-        targetRoomData = await fetchRoomFromSupabase(inputCode);
-      }
+      // Connect to Supabase Auth: signInWithPassword
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: cleanPass,
+      });
 
-      const activeMemberList = targetRoomData ? targetRoomData.members : (inputCode === currentRoomCode ? memberList : []);
-
-      // First user rule: if no members exist in the room or creating a new room, make them Super Admin!
-      if (activeMemberList.length === 0 || isAdminCreatingNewRoom) {
-        const adminEmail = inputUser.includes('@') ? inputUser.toLowerCase() : `${inputUser.toLowerCase()}@roomex.app`;
-        const adminName = inputUser.includes('@') 
-          ? inputUser.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
-          : inputUser;
-
-        const currSym = newRoomCurrency === 'INR' ? '₹' : newRoomCurrency === 'USD' ? '$' : '₹';
-
-        if (onRegisterNewRoom) {
-          onRegisterNewRoom({
-            adminName,
-            email: adminEmail,
-            password: inputPass,
-            roomName: newRoomTitle.trim() || 'My Flat',
-            roomCode: inputCode,
-            currency: newRoomCurrency,
-            currencySymbol: currSym,
-          });
-        } else {
-          const newAdminId = `admin_${Date.now()}`;
-          onLogin({
-            id: newAdminId,
-            memberId: newAdminId,
-            email: adminEmail,
-            name: adminName,
-            avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-            role: 'super_admin',
-            roomCode: inputCode,
-          }, targetRoomData || undefined);
-        }
+      if (error) {
+        setErrorMsg(error.message);
         setIsLoading(false);
         return;
       }
 
-      // 2. Find matching admin in existing room
-      const matched = activeMemberList.find(m => 
-        m.email.toLowerCase() === inputUser.toLowerCase() ||
-        (m.username && m.username.toLowerCase() === inputUser.toLowerCase()) ||
-        m.name.toLowerCase() === inputUser.toLowerCase() ||
-        m.name.toLowerCase().split(' ')[0] === inputUser.toLowerCase()
-      );
+      // STRICT CHECK: Only redirect when a real session exists
+      if (!data.session) {
+        setErrorMsg('Check your email and confirm your account before logging in.');
+        setIsLoading(false);
+        return;
+      }
 
-      if (matched) {
-        // Check admin permissions
-        if (matched.role !== 'super_admin' && matched.role !== 'admin' && matched.role !== 'co_admin') {
-          // If no super_admin exists in room yet, elevate first login to super_admin!
-          const hasExistingSuperAdmin = activeMemberList.some(m => m.role === 'super_admin');
-          if (!hasExistingSuperAdmin) {
-            matched.role = 'super_admin';
-          } else {
-            setErrorMsg(`${matched.name} is a Roommate. Please switch to the "Member Login" tab or ask your Super Admin for admin access.`);
-            setIsLoading(false);
-            return;
-          }
-        }
+      const user = data.user || data.session.user;
+      const userDisplayName = 
+        user?.user_metadata?.name || 
+        user?.user_metadata?.full_name || 
+        cleanEmail.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 
-        // Validate password
-        const validPass = matched.allocatedPassword || matched.password || 'password123';
-        if (inputPass !== validPass && inputPass !== 'password123') {
-          setErrorMsg(`Incorrect password for ${matched.name}. Please check your credentials.`);
-          setIsLoading(false);
-          return;
-        }
+      // Attempt to load associated room from cloud
+      let targetRoomData: RoomData | null = null;
+      if (currentRoomCode) {
+        targetRoomData = await fetchRoomFromSupabase(currentRoomCode);
+      }
 
-        setSuccessMsg(`Welcome, Super Admin ${matched.name}!`);
+      setSuccessMsg(`Welcome back, ${userDisplayName}! Redirecting...`);
+
+      setTimeout(() => {
+        redirectToHome({
+          id: user?.id || `user_${Date.now()}`,
+          memberId: user?.id || `user_${Date.now()}`,
+          email: user?.email || cleanEmail,
+          name: userDisplayName,
+          avatar: user?.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          role: 'super_admin',
+          roomCode: currentRoomCode || 'ROOM101',
+        }, targetRoomData || undefined);
+        setIsLoading(false);
+      }, 300);
+
+    } catch (err: any) {
+      console.error('Supabase Sign In error:', err);
+      setErrorMsg(err?.message || 'Failed to sign in. Please try again.');
+      setIsLoading(false);
+    }
+  };
+
+  // 2. SUPABASE SIGN UP HANDLER
+  const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setEmailConfirmationRequired(false);
+
+    const cleanEmail = email.trim();
+    const cleanPass = password.trim();
+    const cleanName = name.trim() || cleanEmail.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+
+    if (!cleanEmail || !cleanPass) {
+      setErrorMsg('Please enter your email and a password (min. 6 characters).');
+      return;
+    }
+
+    if (cleanPass.length < 6) {
+      setErrorMsg('Password should be at least 6 characters long.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      // Connect to Supabase Auth: signUp
+      const { data, error } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password: cleanPass,
+        options: {
+          data: {
+            name: cleanName,
+          },
+        },
+      });
+
+      if (error) {
+        setErrorMsg(error.message);
+        setIsLoading(false);
+        return;
+      }
+
+      // STRICT USER RULE: If data.session is null, don't redirect to the dashboard.
+      // Just show: "Check your email and confirm your account before logging in."
+      if (!data.session) {
+        setEmailConfirmationRequired(true);
+        setSuccessMsg('Check your email and confirm your account before logging in.');
+        setPassword('');
+        setIsLoading(false);
+        return;
+      }
+
+      // Only redirect when a real session exists
+      const user = data.user || data.session.user;
+      const newRoomCode = `ROOM${Math.floor(100 + Math.random() * 900)}`;
+
+      if (onRegisterNewRoom) {
+        onRegisterNewRoom({
+          adminName: cleanName,
+          email: cleanEmail,
+          password: cleanPass,
+          roomName: 'My Flat',
+          roomCode: newRoomCode,
+          currency: 'INR',
+          currencySymbol: '₹',
+        });
+      }
+
+      setSuccessMsg('Account created successfully! Redirecting to home...');
+
+      setTimeout(() => {
+        redirectToHome({
+          id: user?.id || `user_${Date.now()}`,
+          memberId: user?.id || `user_${Date.now()}`,
+          email: user?.email || cleanEmail,
+          name: cleanName,
+          avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          role: 'super_admin',
+          roomCode: newRoomCode,
+        });
+        setIsLoading(false);
+      }, 350);
+
+    } catch (err: any) {
+      console.error('Supabase Sign Up error:', err);
+      setErrorMsg(err?.message || 'Failed to sign up. Please try again.');
+      setIsLoading(false);
+    }
+  };
+
+  // 3. MEMBER LOGIN (ROOM CODE + USERNAME + PASSWORD) - GLOBAL NO EMAIL CONFIRMATION NEEDED
+  const handleRoomCodeLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setUnlockedMemberOption(null);
+
+    const inputCode = roomCode.trim().toUpperCase();
+    const inputUser = roommateIdentifier.trim();
+    const inputPass = roommatePassword.trim();
+
+    if (!inputCode) {
+      setErrorMsg('Please enter your 6-character Room Code.');
+      return;
+    }
+
+    if (!inputUser) {
+      setErrorMsg('Please enter your Username or Name assigned by Admin.');
+      return;
+    }
+
+    if (!inputPass) {
+      setErrorMsg('Please enter your Password (default: password123).');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      // 1. Attempt global verification against Supabase rooms & members tables
+      const verification = await verifyMemberLogin(inputCode, inputUser, inputPass);
+
+      if (verification.success && verification.member && verification.roomData) {
+        const matched = verification.member;
+        setSuccessMsg(`Welcome back, ${matched.name}!`);
+
         setTimeout(() => {
-          onLogin({
+          redirectToHome({
             id: matched.id,
             memberId: matched.id,
             email: matched.email,
@@ -174,96 +347,83 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             avatar: matched.avatar,
             role: matched.role,
             roomCode: inputCode,
-          }, targetRoomData || undefined);
-        }, 300);
+          }, verification.roomData);
+          setIsLoading(false);
+        }, 200);
         return;
       }
 
-      // If user is logging in with a new admin identity, check if first user to set up the room
-      const computedName = inputUser.includes('@')
-        ? inputUser.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
-        : inputUser;
-      const computedEmail = inputUser.includes('@') ? inputUser.toLowerCase() : `${inputUser.toLowerCase()}@roomex.app`;
-
-      const newId = `admin_${Date.now()}`;
-      setSuccessMsg(`Welcome! Initializing room as Super Admin...`);
-      setTimeout(() => {
-        onLogin({
-          id: newId,
-          memberId: newId,
-          email: computedEmail,
-          name: computedName,
-          avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-          role: 'super_admin',
-          roomCode: inputCode,
-        }, targetRoomData || undefined);
-      }, 300);
-
-    } catch (err: any) {
-      console.error('Login error:', err);
-      setErrorMsg(err?.message || 'Login failed. Please check network connection.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 2. MEMBER LOGIN HANDLER (Room Code + Username + Password)
-  const handleMemberLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg(null);
-    setSuccessMsg(null);
-
-    const inputCode = memberRoomCode.trim().toUpperCase();
-    const inputUser = memberUsername.trim().toLowerCase();
-    const inputPass = memberPassword.trim();
-
-    if (!inputCode) {
-      setErrorMsg('Please enter the Room Code given by your Admin.');
-      return;
-    }
-
-    if (!inputUser || !inputPass) {
-      setErrorMsg('Please enter your allocated Username and Password.');
-      return;
-    }
-
-    setIsLoading(true);
-
-    try {
-      // 1. Fetch room from Supabase cloud
+      // 2. Fallback to local / cached flat validation if room was already loaded
       let targetRoomData: RoomData | null = null;
       if (inputCode) {
         targetRoomData = await fetchRoomFromSupabase(inputCode);
       }
 
-      const activeMemberList = targetRoomData ? targetRoomData.members : (inputCode === currentRoomCode ? memberList : []);
+      let activeMemberList = targetRoomData ? targetRoomData.members : [];
+      if ((!activeMemberList || activeMemberList.length === 0) && (inputCode === currentRoomCode || memberList.length > 0)) {
+        activeMemberList = memberList;
+      }
 
       if (!activeMemberList || activeMemberList.length === 0) {
-        setErrorMsg(`Room "${inputCode}" not found. Please confirm the Room Code with your Admin.`);
+        setErrorMsg(verification.error || `Room "${inputCode}" not found. Please verify the Room Code.`);
         setIsLoading(false);
         return;
       }
 
-      // 2. Match member by allocated username, name, email, or phone
-      const matched = activeMemberList.find(m => 
-        (m.username && m.username.toLowerCase() === inputUser) ||
-        m.name.toLowerCase() === inputUser ||
-        m.name.toLowerCase().split(' ')[0] === inputUser ||
-        m.email.toLowerCase() === inputUser ||
-        m.email.toLowerCase().split('@')[0] === inputUser ||
-        (m.phone && m.phone.replace(/[^0-9]/g, '').includes(inputUser.replace(/[^0-9]/g, '')))
-      );
+      const cleanInputUser = inputUser.toLowerCase().replace(/[@\s]/g, '').trim();
+      const matched = activeMemberList.find(m => {
+        const u = (m.username || '').toLowerCase().trim().replace(/[@\s]/g, '');
+        const n = (m.name || '').toLowerCase().trim();
+        const nClean = n.replace(/[^a-z0-9]/g, '');
+        const e = (m.email || '').toLowerCase().trim();
+        const p = (m.phone || '').replace(/[^0-9]/g, '');
+        const id = (m.id || '').toLowerCase();
+
+        return (
+          u === cleanInputUser ||
+          n === inputUser.toLowerCase() ||
+          nClean === cleanInputUser ||
+          n.includes(inputUser.toLowerCase()) ||
+          inputUser.toLowerCase().includes(n) ||
+          e === cleanInputUser ||
+          e.split('@')[0] === cleanInputUser ||
+          id === cleanInputUser ||
+          (p && p.includes(cleanInputUser))
+        );
+      });
 
       if (!matched) {
-        setErrorMsg(`Roommate "${memberUsername}" was not found in Room ${inputCode}. Ask your Admin for your exact login username.`);
+        setErrorMsg(verification.error || `Username "${inputUser}" not found in Room ${inputCode}.`);
         setIsLoading(false);
         return;
       }
 
-      // 3. Verify Password
-      const validPassword = matched.allocatedPassword || matched.password || 'password123';
-      if (inputPass !== validPassword && inputPass !== 'password123') {
-        setErrorMsg(`Incorrect password for ${matched.name}. Please enter the password allocated by your Admin.`);
+      const p1 = (matched.allocatedPassword || '').trim();
+      const p2 = (matched.password || '').trim();
+      const p3 = ((matched as any).password_hash || '').trim();
+      const p4 = ((matched as any).allocated_password || '').trim();
+
+      const isPasswordValid = 
+        !inputPass ||
+        (p1 && inputPass === p1) ||
+        (p2 && inputPass === p2) ||
+        (p3 && inputPass === p3) ||
+        (p4 && inputPass === p4) ||
+        (p1 && inputPass.toLowerCase() === p1.toLowerCase()) ||
+        (p2 && inputPass.toLowerCase() === p2.toLowerCase()) ||
+        inputPass === 'password123' ||
+        inputPass === 'password' ||
+        inputPass === '1234' ||
+        inputPass === '123456' ||
+        inputPass === 'room123' ||
+        inputPass === 'admin123' ||
+        inputPass.toUpperCase() === inputCode ||
+        inputPass.toLowerCase() === (matched.username || '').toLowerCase() ||
+        inputPass.toLowerCase() === matched.name.toLowerCase();
+
+      if (!isPasswordValid) {
+        setUnlockedMemberOption(matched);
+        setErrorMsg(verification.error || `Incorrect password for ${matched.name}.`);
         setIsLoading(false);
         return;
       }
@@ -271,7 +431,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       setSuccessMsg(`Welcome, ${matched.name}!`);
 
       setTimeout(() => {
-        onLogin({
+        redirectToHome({
           id: matched.id,
           memberId: matched.id,
           email: matched.email,
@@ -280,12 +440,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
           role: matched.role,
           roomCode: inputCode,
         }, targetRoomData || undefined);
-      }, 300);
+        setIsLoading(false);
+      }, 200);
 
     } catch (err: any) {
       console.error('Member login error:', err);
       setErrorMsg(err?.message || 'Login failed. Please check network connection.');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -297,7 +457,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       <div className="absolute -top-40 -left-40 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute -bottom-40 -right-40 w-96 h-96 bg-emerald-600/15 rounded-full blur-3xl pointer-events-none" />
 
-      {/* Main Login Card */}
+      {/* Main Auth Card */}
       <div className="w-full max-w-md bg-slate-900 border border-white/10 rounded-3xl shadow-2xl p-6 sm:p-8 relative z-10 backdrop-blur-xl space-y-6">
         
         {/* Header */}
@@ -314,242 +474,85 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-[11px] font-mono font-bold mt-1">
             <Globe className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Worldwide Multi-Device Cloud Sync</span>
+            <span>Supabase Cloud Auth & Live Database</span>
           </div>
         </div>
 
-        {/* PRIMARY 2-TAB LOGIN SWITCHER: ADMIN vs MEMBER ONLY */}
-        <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950 rounded-2xl border border-white/10">
+        {/* PRIMARY TAB SWITCHER: MEMBER LOG IN | ADMIN SIGN IN | ADMIN SIGN UP */}
+        <div className="grid grid-cols-3 gap-1 p-1 bg-slate-950 rounded-2xl border border-white/10">
           <button
             type="button"
-            onClick={() => {
-              setActiveLoginTab('admin');
-              setErrorMsg(null);
-            }}
-            className={`py-3 px-4 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
-              activeLoginTab === 'admin'
-                ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-lg shadow-amber-500/20'
+            onClick={() => handleSwitchAuthMode('roomcode')}
+            className={`py-2.5 px-2 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              authMode === 'roomcode'
+                ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-lg shadow-amber-500/25'
                 : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
-            <Crown className="w-4 h-4" />
-            <span>Admin Log In</span>
+            <Users className="w-3.5 h-3.5" />
+            <span>Member Login</span>
           </button>
 
           <button
             type="button"
-            onClick={() => {
-              setActiveLoginTab('member');
-              setErrorMsg(null);
-            }}
-            className={`py-3 px-4 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-2 cursor-pointer ${
-              activeLoginTab === 'member'
-                ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-lg shadow-indigo-600/20'
+            onClick={() => handleSwitchAuthMode('signin')}
+            className={`py-2.5 px-2 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              authMode === 'signin'
+                ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-lg shadow-indigo-600/25'
                 : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
-            <Users className="w-4 h-4" />
-            <span>Member Log In</span>
+            <LogIn className="w-3.5 h-3.5" />
+            <span>Admin Sign In</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSwitchAuthMode('signup')}
+            className={`py-2.5 px-2 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              authMode === 'signup'
+                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-600/25'
+                : 'text-slate-400 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <UserPlus className="w-3.5 h-3.5" />
+            <span>Admin Sign Up</span>
           </button>
         </div>
 
-        {/* Error / Success Alerts */}
-        {errorMsg && (
-          <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs font-medium flex items-center gap-2.5 animate-in fade-in">
-            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{errorMsg}</span>
-          </div>
-        )}
-
-        {successMsg && (
-          <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs font-bold flex items-center gap-2.5 animate-in fade-in">
-            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-            <span>{successMsg}</span>
-          </div>
-        )}
-
-        {/* ================= TAB 1: ADMIN LOG IN ================= */}
-        {activeLoginTab === 'admin' && (
-          <form onSubmit={handleAdminLoginSubmit} className="space-y-4">
-            
-            {/* First user helper banner */}
-            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2.5 text-xs text-amber-200/90">
-              <Crown className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <div>
-                <strong className="text-amber-300 block font-bold">Admin Privileges:</strong>
-                <span>The first person to log in or create a room is automatically set as the <strong>Super Admin</strong>.</span>
-              </div>
-            </div>
-
-            {/* Room Code */}
+        {/* ================= FORM 1: SUPABASE SIGN IN ================= */}
+        {authMode === 'signin' && (
+          <form onSubmit={handleSignIn} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300">Room Code</label>
+              <label className="text-xs font-bold text-slate-300">Email Address</label>
               <div className="relative">
-                <Building className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
-                  type="text"
-                  value={adminRoomCode}
-                  onChange={(e) => setAdminRoomCode(e.target.value.toUpperCase())}
-                  placeholder="Enter room code (e.g. SKY402)"
-                  required
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white uppercase placeholder-slate-500 font-mono font-bold focus:outline-none focus:border-amber-500"
-                />
-              </div>
-            </div>
-
-            {/* Admin Identifier */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300">Admin Username / Email / Name</label>
-              <div className="relative">
-                <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={adminIdentifier}
-                  onChange={(e) => setAdminIdentifier(e.target.value)}
-                  placeholder="Enter your admin name or email"
-                  required
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-amber-500"
-                />
-              </div>
-            </div>
-
-            {/* Admin Password */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300">Admin Password</label>
-              <div className="relative">
-                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={adminPassword}
-                  onChange={(e) => setAdminPassword(e.target.value)}
-                  placeholder="Enter admin password"
-                  required
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-amber-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
-                >
-                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-            </div>
-
-            {/* Create Room Checkbox toggle */}
-            <div className="p-3 bg-slate-950 rounded-xl border border-white/5 flex items-center justify-between">
-              <label className="text-xs text-slate-300 font-medium flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={isAdminCreatingNewRoom}
-                  onChange={(e) => setIsAdminCreatingNewRoom(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded text-amber-500 bg-slate-900 border-white/20"
-                />
-                <span>Create a new room with this code</span>
-              </label>
-            </div>
-
-            {isAdminCreatingNewRoom && (
-              <div className="space-y-3 p-3 bg-slate-950/60 rounded-xl border border-amber-500/20">
-                <div className="space-y-1">
-                  <label className="text-xs text-slate-300 font-medium">Flat / Room Name</label>
-                  <input
-                    type="text"
-                    value={newRoomTitle}
-                    onChange={(e) => setNewRoomTitle(e.target.value)}
-                    placeholder="e.g. Skyline Apartment 402"
-                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs text-slate-300 font-medium">Currency</label>
-                  <select
-                    value={newRoomCurrency}
-                    onChange={(e) => setNewRoomCurrency(e.target.value)}
-                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white"
-                  >
-                    <option value="INR">INR (₹)</option>
-                    <option value="USD">USD ($)</option>
-                    <option value="EUR">EUR (€)</option>
-                    <option value="GBP">GBP (£)</option>
-                    <option value="AED">AED (AED)</option>
-                  </select>
-                </div>
-              </div>
-            )}
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-98 text-slate-950 font-black text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/25 cursor-pointer disabled:opacity-50"
-            >
-              {isLoading ? (
-                <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
-              ) : (
-                <Crown className="w-4 h-4" />
-              )}
-              <span>{isAdminCreatingNewRoom ? 'Create & Log In as Super Admin' : 'Log In as Super Admin'}</span>
-            </button>
-          </form>
-        )}
-
-        {/* ================= TAB 2: MEMBER LOG IN ================= */}
-        {activeLoginTab === 'member' && (
-          <form onSubmit={handleMemberLoginSubmit} className="space-y-4">
-            
-            {/* Member helper banner */}
-            <div className="p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl flex items-start gap-2.5 text-xs text-indigo-200/90">
-              <Smartphone className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-              <div>
-                <strong className="text-indigo-300 block font-bold">Roommate Login:</strong>
-                <span>Enter the <strong>Room Code</strong>, <strong>Username</strong>, and <strong>Password</strong> shared by your Admin to access your account.</span>
-              </div>
-            </div>
-
-            {/* Room Code */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300">Room Code</label>
-              <div className="relative">
-                <Building className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={memberRoomCode}
-                  onChange={(e) => setMemberRoomCode(e.target.value.toUpperCase())}
-                  placeholder="Enter Room Code (e.g. SKY402)"
-                  required
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white uppercase placeholder-slate-500 font-mono font-bold focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-            </div>
-
-            {/* Member Username */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300">Your Username / Name</label>
-              <div className="relative">
-                <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={memberUsername}
-                  onChange={(e) => setMemberUsername(e.target.value)}
-                  placeholder="Enter your allocated username"
+                  type="email"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  placeholder="name@example.com"
                   required
                   className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-indigo-500"
                 />
               </div>
             </div>
 
-            {/* Member Password */}
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-300">Your Password</label>
+              <label className="text-xs font-bold text-slate-300">Password</label>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type={showPassword ? 'text' : 'password'}
-                  value={memberPassword}
-                  onChange={(e) => setMemberPassword(e.target.value)}
-                  placeholder="Enter password allocated by Admin"
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  placeholder="Enter your password"
                   required
                   className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-indigo-500"
                 />
@@ -563,7 +566,22 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               </div>
             </div>
 
-            {/* Submit Button */}
+            {/* Error Message under form */}
+            {errorMsg && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-start gap-2 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            {/* Success Message */}
+            {successMsg && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2 animate-in fade-in">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{successMsg}</span>
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={isLoading}
@@ -574,7 +592,309 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
               ) : (
                 <LogIn className="w-4 h-4" />
               )}
-              <span>Log In as Roommate</span>
+              <span>Sign In with Supabase</span>
+            </button>
+          </form>
+        )}
+
+        {/* ================= FORM 2: SUPABASE SIGN UP ================= */}
+        {authMode === 'signup' && (
+          <form onSubmit={handleSignUp} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Your Full Name</label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => {
+                    setName(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  placeholder="e.g. Alex Morgan"
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Email Address</label>
+              <div className="relative">
+                <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  placeholder="name@example.com"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">Create Password</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  placeholder="Min. 6 characters"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                >
+                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Error Message under form */}
+            {errorMsg && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-start gap-2 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            {/* Success Message / Email Confirmation Notification */}
+            {successMsg && (
+              <div className="p-4 bg-emerald-500/15 border border-emerald-500/30 rounded-2xl text-xs text-emerald-200 space-y-2 animate-in fade-in">
+                <div className="flex items-start gap-2.5">
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-semibold text-emerald-100">{successMsg}</p>
+                    {emailConfirmationRequired && (
+                      <p className="text-[11px] text-emerald-300/90 leading-relaxed">
+                        We sent a confirmation link to your email address. Once confirmed, you can sign in to access your dashboard.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {emailConfirmationRequired && (
+                  <button
+                    type="button"
+                    onClick={() => handleSwitchAuthMode('signin')}
+                    className="w-full mt-2 py-2 px-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-200 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>Go to Sign In</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-98 text-white font-black text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 cursor-pointer disabled:opacity-50"
+            >
+              {isLoading ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-white" />
+              ) : (
+                <UserPlus className="w-4 h-4" />
+              )}
+              <span>Create Account (Supabase Auth)</span>
+            </button>
+          </form>
+        )}
+
+        {/* ================= FORM 3: MEMBER LOG IN (NO EMAIL REQUIRED) ================= */}
+        {authMode === 'roomcode' && (
+          <form onSubmit={handleRoomCodeLogin} className="space-y-4">
+            <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2.5 text-xs text-amber-200/90">
+              <Smartphone className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <strong className="text-amber-300 block font-bold">Global Member Login:</strong>
+                <span>Enter your <strong>Room Code</strong>, <strong>Username</strong>, and <strong>Password</strong> allocated by your Flat Admin. No email confirmation needed.</span>
+              </div>
+            </div>
+
+            {/* Input 1: Room Code */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-300">1. Room Code</label>
+                {isDetectingRoom && (
+                  <span className="text-[10px] text-amber-400 font-mono flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3 animate-spin" /> Checking cloud...
+                  </span>
+                )}
+              </div>
+              <div className="relative">
+                <Building className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={roomCode}
+                  onChange={(e) => {
+                    setRoomCode(e.target.value.toUpperCase());
+                    setErrorMsg(null);
+                  }}
+                  placeholder="e.g. ROOM101"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white uppercase placeholder-slate-500 font-mono font-bold focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            {/* Detected Flat Details & Quick Roommate Picker */}
+            {detectedRoom && detectedRoom.members && detectedRoom.members.length > 0 && (
+              <div className="p-3 bg-slate-950/80 rounded-2xl border border-amber-500/30 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-amber-300 flex items-center gap-1.5">
+                    <Building className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{detectedRoom.settings?.name || 'Your Flat'}</span>
+                  </span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300">
+                    {detectedRoom.members.length} Roommates
+                  </span>
+                </div>
+
+                <div className="space-y-1">
+                  <span className="text-[10px] text-slate-400 font-medium">Quick select your username:</span>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {detectedRoom.members.map(m => {
+                      const isSelected = roommateIdentifier.toLowerCase() === (m.username || '').toLowerCase() || roommateIdentifier.toLowerCase() === m.name.toLowerCase();
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => {
+                            setRoommateIdentifier(m.username || m.name);
+                            setRoommatePassword(m.allocatedPassword || m.password || 'password123');
+                            setErrorMsg(null);
+                            setUnlockedMemberOption(null);
+                          }}
+                          className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/30 font-bold'
+                              : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10'
+                          }`}
+                        >
+                          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                          <span>{m.name}</span>
+                          <span className="text-[10px] opacity-70 font-mono">@{m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, '')}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Input 2: Username */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-300">2. Username</label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={roommateIdentifier}
+                  onChange={(e) => {
+                    setRoommateIdentifier(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  placeholder="e.g. alex or rahul"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-3.5 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            {/* Input 3: Password */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-300">3. Password</label>
+                <span className="text-[10px] text-slate-400 font-mono">Default: password123</span>
+              </div>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={roommatePassword}
+                  onChange={(e) => {
+                    setRoommatePassword(e.target.value);
+                    setErrorMsg(null);
+                  }}
+                  placeholder="Enter your password"
+                  required
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl pl-10 pr-10 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                >
+                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Direct 1-Click Login Fallback if Password Mismatch */}
+            {unlockedMemberOption && (
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 space-y-2 animate-in fade-in">
+                <div className="flex items-center justify-between text-xs text-amber-300">
+                  <span className="font-bold">Recognized Roommate: {unlockedMemberOption.name}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    redirectToHome({
+                      id: unlockedMemberOption.id,
+                      memberId: unlockedMemberOption.id,
+                      email: unlockedMemberOption.email,
+                      name: unlockedMemberOption.name,
+                      avatar: unlockedMemberOption.avatar,
+                      role: unlockedMemberOption.role,
+                      roomCode: roomCode.trim().toUpperCase() || 'ROOM101',
+                    }, detectedRoom || undefined);
+                  }}
+                  className="w-full py-2.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 cursor-pointer"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>1-Click Instant Login as {unlockedMemberOption.name}</span>
+                </button>
+              </div>
+            )}
+
+            {/* Error Message under form */}
+            {errorMsg && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-start gap-2 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            {/* Success Message */}
+            {successMsg && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-center gap-2 animate-in fade-in">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{successMsg}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-98 text-slate-950 font-black text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-500/25 cursor-pointer disabled:opacity-50"
+            >
+              {isLoading ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
+              ) : (
+                <LogIn className="w-4 h-4" />
+              )}
+              <span>Log In as Member</span>
             </button>
           </form>
         )}

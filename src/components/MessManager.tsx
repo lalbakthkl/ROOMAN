@@ -35,7 +35,12 @@ import {
   RoomSettings,
   MembershipType 
 } from '../types';
-import { calculateMessMetrics, calculateMemberMeals } from '../lib/storage';
+import { 
+  calculateMessMetrics, 
+  calculateMemberMeals, 
+  calculateMemberPayableBreakdown,
+  calculateMemberRentShare 
+} from '../lib/storage';
 
 interface MessManagerProps {
   meals: DailyMealEntry[];
@@ -101,11 +106,11 @@ export const MessManager: React.FC<MessManagerProps> = ({
 
   const metrics = calculateMessMetrics(expenses, meals, members, daysInMonth);
 
-  // Total Rent Calculations
+  // Total Rent Calculations & Member Shares
   const rentExpenses = expenses.filter(e => e.category === 'rent');
   const totalRentExpense = rentExpenses.reduce((sum, e) => sum + e.amount, 0) || (settings.monthlyRent || 0);
 
-  // Calculate per member rent share
+  // Calculate per member rent share using storage helper
   const rentMembers = members.filter(m => m.membershipType !== 'mess_only');
   const rentSharePerMember = rentMembers.length > 0 ? (totalRentExpense / rentMembers.length) : 0;
 
@@ -298,9 +303,10 @@ export const MessManager: React.FC<MessManagerProps> = ({
 
         {/* Active Member's Total Payable: Rent Share + Mess Bill */}
         {(() => {
-          const myMessBill = activeMember.membershipType === 'rent_only' ? 0 : (metrics.memberDaysBreakdown[activeMember.id]?.cost || 0);
-          const myRentShare = activeMember.membershipType === 'mess_only' ? 0 : rentSharePerMember;
-          const myTotalPayable = myMessBill + myRentShare;
+          const breakdown = calculateMemberPayableBreakdown(activeMember.id, members, expenses, settings);
+          const myMessBill = breakdown.messCost;
+          const myRentShare = breakdown.rentShare;
+          const myTotalPayable = breakdown.totalPayable;
 
           return (
             <div className="p-5 bg-gradient-to-br from-amber-950/30 via-slate-900 to-indigo-950/30 border border-amber-500/40 rounded-2xl space-y-1 shadow-lg">
@@ -537,15 +543,16 @@ export const MessManager: React.FC<MessManagerProps> = ({
                 const isMessOnly = memType === 'mess_only';
                 const isOnVacation = !!member.isOnVacation;
 
+                const payableBreakdown = calculateMemberPayableBreakdown(member.id, members, expenses, settings);
                 const dayInfo = metrics.memberDaysBreakdown[member.id] || {
                   daysStayed: member.daysStayedInMonth ?? daysInMonth,
-                  cost: 0,
+                  cost: payableBreakdown.messCost,
                   formula: '',
                 };
 
-                const calculatedMessBill = isRentOnly ? 0 : dayInfo.cost;
-                const calculatedRentShare = isMessOnly ? 0 : rentSharePerMember;
-                const totalPayable = calculatedRentShare + calculatedMessBill;
+                const calculatedMessBill = payableBreakdown.messCost;
+                const calculatedRentShare = payableBreakdown.rentShare;
+                const totalPayable = payableBreakdown.totalPayable;
 
                 return (
                   <div 

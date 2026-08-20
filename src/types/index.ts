@@ -125,6 +125,8 @@ export interface AuditLog {
   timestamp: string;
 }
 
+export type CleaningInterval = 'daily' | 'weekly' | 'bi_weekly' | 'monthly' | 'custom_days';
+
 export interface CleaningSchedule {
   currentMemberId: string;
   nextMemberId: string;
@@ -132,7 +134,8 @@ export interface CleaningSchedule {
   dutyArea?: string; // e.g. "Bathroom", "Full Flat", "Kitchen", "Living Room", "Trash & Mopping"
   assignedDuties?: Record<string, string>; // memberId -> dutyArea (e.g. { "member_1": "Bathroom", "member_2": "Kitchen" })
   rotaOrder: string[]; // member IDs in order
-  frequency: 'daily' | 'weekly';
+  frequency: 'daily' | 'weekly' | 'bi_weekly' | 'monthly' | 'custom_days';
+  intervalDays?: number; // e.g. 1 (daily), 7 (weekly), 14 (bi-weekly), 30 (monthly), or custom X days
   lastCompletedDate?: string;
   lastCompletedBy?: string;
 }

@@ -13,6 +13,7 @@ import {
   Calendar, 
   Utensils, 
   KeyRound, 
+  Key,
   History, 
   AlertTriangle,
   ArrowRight,
@@ -35,12 +36,14 @@ import {
   Trash2,
   Home,
   CheckCircle2,
-  PlusCircle
+  PlusCircle,
+  Camera
 } from 'lucide-react';
 import { Member, Role, MemberPermissions, AuditLog, MembershipType, RoomSettings, Expense } from '../types';
 import { DEFAULT_PERMISSIONS } from '../lib/storage';
 import { ConfirmDialog } from './ConfirmDialog';
 import { AdminExpensesManager } from './AdminExpensesManager';
+import { ProfilePhotoModal } from './ProfilePhotoModal';
 
 interface SuperAdminTabProps {
   members: Member[];
@@ -70,6 +73,8 @@ interface SuperAdminTabProps {
   onUpdateMemberMembershipType?: (memberId: string, type: MembershipType) => void;
   onUpdateMemberCustomRent?: (memberId: string, customRent: number | undefined) => void;
   onUpdatePresetRent?: (presetActive: boolean, amount: number, type: 'total_room' | 'per_member') => void;
+  onUpdateMemberCredentials?: (memberId: string, username: string, password?: string) => void;
+  onUpdateMemberAvatar?: (memberId: string, avatarUrl: string) => void;
   onUpdateMemberParticipation?: (
     memberId: string, 
     params: {
@@ -104,6 +109,8 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
   onUpdateMemberMembershipType,
   onUpdateMemberCustomRent,
   onUpdatePresetRent,
+  onUpdateMemberCredentials,
+  onUpdateMemberAvatar,
   onUpdateMemberParticipation,
   onBulkUpdateParticipation,
 }) => {
@@ -112,6 +119,13 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
   const [transferOwnerModal, setTransferOwnerModal] = useState<Member | null>(null);
   const [copiedMemberId, setCopiedMemberId] = useState<string | null>(null);
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
+  const [editingAvatarMember, setEditingAvatarMember] = useState<Member | null>(null);
+
+  // Edit Credentials Modal State
+  const [editCredentialsMember, setEditCredentialsMember] = useState<Member | null>(null);
+  const [editUsername, setEditUsername] = useState('');
+  const [editPassword, setEditPassword] = useState('');
+  const [credentialsSavedToast, setCredentialsSavedToast] = useState(false);
   
   // Rent Management State
   const [presetRentActive, setPresetRentActive] = useState<boolean>(settings.presetRentActive ?? false);
@@ -253,6 +267,20 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
     setTimeout(() => setCopiedMemberId(null), 2000);
   };
 
+  const openEditCredentialsModal = (m: Member) => {
+    setEditCredentialsMember(m);
+    setEditUsername(m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    setEditPassword(m.allocatedPassword || m.password || 'password123');
+  };
+
+  const handleSaveCredentials = () => {
+    if (!editCredentialsMember || !onUpdateMemberCredentials) return;
+    onUpdateMemberCredentials(editCredentialsMember.id, editUsername, editPassword);
+    setEditCredentialsMember(null);
+    setCredentialsSavedToast(true);
+    setTimeout(() => setCredentialsSavedToast(false), 3000);
+  };
+
   const togglePasswordReveal = (mId: string) => {
     setRevealedPasswords(prev => ({
       ...prev,
@@ -314,21 +342,23 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
   return (
     <div className="space-y-6 font-sans">
       
-      {/* Super Admin Top Badge & Banner */}
+      {/* Admin & Super Admin Top Badge & Banner */}
       <div className="p-5 bg-gradient-to-r from-amber-950/50 via-slate-900 to-indigo-950/40 border border-amber-500/40 rounded-2xl shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
           <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 shadow-lg shadow-amber-500/20">
-            <Crown className="w-6 h-6" />
+            {activeMember.role === 'super_admin' ? <Crown className="w-6 h-6" /> : <ShieldCheck className="w-6 h-6 text-indigo-400" />}
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-black text-white">Super Admin Control Center</h2>
+              <h2 className="text-lg font-black text-white">
+                {activeMember.role === 'super_admin' ? 'Super Admin Master Hub' : 'Admin & Room Management Hub'}
+              </h2>
               <span className="text-[10px] uppercase font-bold tracking-widest px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono">
-                Master Authority
+                {activeMember.role === 'super_admin' ? 'Master Authority' : 'Admin Authority'}
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Manage roommate credentials, remove members, set Vacation/Long-leave participation (for yourself & roommates), and promote admins.
+              Manage roommate credentials, roles & permissions, expenses, rent splits, vacation participation, and audit records in one central console.
             </p>
           </div>
         </div>
@@ -710,11 +740,20 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
                     
                     {/* Member Identity & Allocated Credentials */}
                     <div className="flex items-start sm:items-center gap-3.5">
-                      <img 
-                        src={member.avatar} 
-                        alt={member.name} 
-                        className="w-12 h-12 rounded-2xl object-cover border border-white/10 shrink-0" 
-                      />
+                      <div 
+                        onClick={() => setEditingAvatarMember(member)}
+                        className="relative group cursor-pointer shrink-0"
+                        title="Click to change profile photo"
+                      >
+                        <img 
+                          src={member.avatar} 
+                          alt={member.name} 
+                          className="w-12 h-12 rounded-2xl object-cover border border-white/10 group-hover:border-indigo-400 transition-all shadow-md" 
+                        />
+                        <div className="absolute inset-0 rounded-2xl bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity">
+                          <Camera className="w-4 h-4" />
+                        </div>
+                      </div>
 
                       <div className="space-y-1">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -776,6 +815,16 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
                               {isPassRevealed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
                             </button>
                           </span>
+
+                          <button
+                            type="button"
+                            onClick={() => openEditCredentialsModal(member)}
+                            className="px-2 py-0.5 rounded-md bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 transition-colors font-medium cursor-pointer"
+                            title="Edit username or reset password"
+                          >
+                            <Key className="w-3 h-3" />
+                            <span>Edit Password</span>
+                          </button>
 
                           <button
                             type="button"
@@ -852,20 +901,37 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
                         </>
                       )}
 
-                      {/* Stayed Days Increment / Decrement */}
+                      {/* Stayed Days Increment / Decrement & Direct Input */}
                       {onUpdateMemberDaysStayed && (
                         <div className="inline-flex items-center bg-slate-950 border border-white/10 rounded-xl p-1 gap-1">
                           <span className="text-[10px] text-slate-500 font-mono pl-1">Days:</span>
                           <button
+                            type="button"
                             onClick={() => onUpdateMemberDaysStayed(member.id, Math.max(0, memDays - 1))}
                             className="w-6 h-6 rounded bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-bold flex items-center justify-center cursor-pointer"
+                            title="Decrease stayed days"
                           >
                             -
                           </button>
-                          <span className="text-xs font-bold font-mono text-white px-1">{memDays}</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max={daysInMonth}
+                            value={memDays}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              if (!isNaN(val)) {
+                                onUpdateMemberDaysStayed(member.id, Math.max(0, Math.min(daysInMonth, val)));
+                              }
+                            }}
+                            className="w-10 text-center bg-slate-900 border border-indigo-500/40 rounded py-0.5 text-xs font-mono font-bold text-white focus:outline-none focus:border-indigo-400"
+                            title="Directly edit stayed days (affects mess calculation immediately)"
+                          />
                           <button
+                            type="button"
                             onClick={() => onUpdateMemberDaysStayed(member.id, Math.min(daysInMonth, memDays + 1))}
                             className="w-6 h-6 rounded bg-white/5 hover:bg-white/10 text-slate-300 text-xs font-bold flex items-center justify-center cursor-pointer"
+                            title="Increase stayed days"
                           >
                             +
                           </button>
@@ -1490,6 +1556,143 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* EDIT CREDENTIALS / RESET PASSWORD MODAL */}
+      {editCredentialsMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in font-sans">
+          <div 
+            className="bg-slate-900 border border-white/10 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-slate-950/60">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    Set Login Credentials
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Roommate: <strong className="text-indigo-400">{editCredentialsMember.name}</strong>
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setEditCredentialsMember(null)}
+                className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-200">
+                <p className="text-[11px] leading-relaxed">
+                  The roommate will use their <strong>Room Code ({settings.roomCode})</strong> along with the Username and Password configured below to log in from any device or browser.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1.5">Login Username</label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 font-mono">@</span>
+                  <input
+                    type="text"
+                    value={editUsername}
+                    onChange={(e) => setEditUsername(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, ''))}
+                    placeholder="e.g. rahul, alex10"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl pl-8 pr-3.5 py-2.5 text-xs text-white font-mono font-medium focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">Roommate can also log in by their full name.</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1.5">Set Password</label>
+                <input
+                  type="text"
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                  placeholder="Enter custom password (e.g. 1234, room123)"
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-amber-300 font-mono font-bold focus:border-amber-500 focus:outline-none"
+                />
+                <div className="flex gap-1.5 mt-2 flex-wrap">
+                  <span className="text-[10px] text-slate-400">Quick Presets:</span>
+                  <button
+                    type="button"
+                    onClick={() => setEditPassword('1234')}
+                    className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-slate-300 font-mono"
+                  >
+                    1234
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditPassword('password123')}
+                    className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-slate-300 font-mono"
+                  >
+                    password123
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditPassword('room123')}
+                    className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-slate-300 font-mono"
+                  >
+                    room123
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditPassword(`${editUsername || 'user'}123`)}
+                    className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-[10px] text-indigo-300 font-mono"
+                  >
+                    {editUsername || 'user'}123
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-3.5 border-t border-white/10 flex justify-end gap-2 bg-slate-950/60">
+              <button
+                onClick={() => setEditCredentialsMember(null)}
+                className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveCredentials}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-md shadow-indigo-600/25 flex items-center gap-1.5"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Save & Sync to Cloud</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Credentials Saved Toast Notification */}
+      {credentialsSavedToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-emerald-600 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2 text-xs font-bold animate-in slide-in-from-bottom-2">
+          <Check className="w-4 h-4" />
+          <span>Login credentials updated and synced to worldwide cloud!</span>
+        </div>
+      )}
+
+      {/* Profile Photo Modal */}
+      {editingAvatarMember && (
+        <ProfilePhotoModal
+          isOpen={true}
+          onClose={() => setEditingAvatarMember(null)}
+          currentAvatar={editingAvatarMember.avatar}
+          memberName={editingAvatarMember.name}
+          onSaveAvatar={(newAvatar) => {
+            if (onUpdateMemberAvatar) {
+              onUpdateMemberAvatar(editingAvatarMember.id, newAvatar);
+            }
+            setEditingAvatarMember(null);
+          }}
+        />
       )}
 
     </div>

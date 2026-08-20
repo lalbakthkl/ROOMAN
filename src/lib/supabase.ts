@@ -25,48 +25,97 @@ export interface SupabaseSyncStatus {
 
 // SQL Schema generator for users to execute in Supabase SQL editor if desired
 export const SUPABASE_SQL_SCHEMA = `-- ROOMEX Supabase Database Schema
--- Run this in your Supabase SQL Editor (https://app.supabase.com/project/hmzdpdnlmoxecihlqecf/sql)
+-- Run this in your Supabase SQL Editor (https://supabase.com/dashboard/project/_/sql)
 
--- 1. Rooms table
-CREATE TABLE IF NOT EXISTS roomex_rooms (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  currency TEXT DEFAULT 'USD',
-  currency_symbol TEXT DEFAULT '$',
+-- 1. Standard Rooms Table
+CREATE TABLE IF NOT EXISTS rooms (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_code TEXT UNIQUE NOT NULL,
+  admin_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  name TEXT NOT NULL DEFAULT 'Flat / Room',
+  currency TEXT DEFAULT 'INR',
+  currency_symbol TEXT DEFAULT '₹',
   monthly_budget NUMERIC DEFAULT 1000,
   is_mess_enabled BOOLEAN DEFAULT true,
   mess_calculation_mode TEXT DEFAULT 'dynamic_ratio',
-  fixed_meal_rate NUMERIC DEFAULT 3.5,
-  room_code TEXT UNIQUE,
-  created_by_id TEXT,
+  fixed_meal_rate NUMERIC DEFAULT 4,
+  raw_snapshot JSONB,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 2. Room Members table
-CREATE TABLE IF NOT EXISTS roomex_members (
-  id TEXT PRIMARY KEY,
-  room_id TEXT REFERENCES roomex_rooms(id) ON DELETE CASCADE,
+-- 2. Standard Members Table (Supports Global Member Login without Email)
+CREATE TABLE IF NOT EXISTS members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id UUID REFERENCES rooms(id) ON DELETE CASCADE,
+  username TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
   name TEXT NOT NULL,
-  email TEXT,
-  avatar TEXT,
-  phone TEXT,
   role TEXT DEFAULT 'member', -- 'super_admin', 'admin', 'co_admin', 'member'
+  email TEXT,
+  phone TEXT,
+  avatar TEXT DEFAULT 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
   permissions JSONB DEFAULT '{"canAddExpense": true, "canEditAnyExpense": false, "canDeleteExpense": false, "canManageMeals": true, "canSettleDebts": true, "canInviteMembers": false, "canGrantAdmin": false, "canEditRoomSettings": false}',
   is_mess_active BOOLEAN DEFAULT true,
   deposit_balance NUMERIC DEFAULT 0,
+  days_stayed NUMERIC DEFAULT 30,
+  membership_type TEXT DEFAULT 'both',
+  custom_rent_share NUMERIC DEFAULT 0,
   upi_id TEXT,
+  is_on_vacation BOOLEAN DEFAULT false,
+  vacation_type TEXT DEFAULT 'active',
+  vacation_reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(room_id, username)
+);
+
+-- 3. Roomex Fallback / Extended Tables
+CREATE TABLE IF NOT EXISTS roomex_rooms (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  currency TEXT DEFAULT 'INR',
+  currency_symbol TEXT DEFAULT '₹',
+  monthly_budget NUMERIC DEFAULT 1000,
+  is_mess_enabled BOOLEAN DEFAULT true,
+  mess_calculation_mode TEXT DEFAULT 'dynamic_ratio',
+  fixed_meal_rate NUMERIC DEFAULT 4,
+  room_code TEXT UNIQUE,
+  created_by_id TEXT,
+  raw_snapshot TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS roomex_members (
+  id TEXT PRIMARY KEY,
+  room_id TEXT,
+  name TEXT NOT NULL,
+  email TEXT,
+  username TEXT,
+  allocated_password TEXT,
+  avatar TEXT,
+  phone TEXT,
+  role TEXT DEFAULT 'member',
+  permissions JSONB,
+  is_mess_active BOOLEAN DEFAULT true,
+  deposit_balance NUMERIC DEFAULT 0,
+  days_stayed NUMERIC DEFAULT 30,
+  membership_type TEXT DEFAULT 'both',
+  custom_rent_share NUMERIC DEFAULT 0,
+  upi_id TEXT,
+  is_on_vacation BOOLEAN DEFAULT false,
+  vacation_type TEXT DEFAULT 'active',
+  vacation_reason TEXT,
   joined_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 3. Expenses table
 CREATE TABLE IF NOT EXISTS roomex_expenses (
   id TEXT PRIMARY KEY,
-  room_id TEXT REFERENCES roomex_rooms(id) ON DELETE CASCADE,
+  room_id TEXT,
   title TEXT NOT NULL,
   amount NUMERIC NOT NULL,
   category TEXT NOT NULL,
-  paid_by TEXT REFERENCES roomex_members(id),
+  paid_by TEXT,
   split_type TEXT DEFAULT 'equal',
   splits JSONB NOT NULL,
   date TIMESTAMPTZ DEFAULT now(),
@@ -77,10 +126,9 @@ CREATE TABLE IF NOT EXISTS roomex_expenses (
   is_mess_expense BOOLEAN DEFAULT false
 );
 
--- 4. Daily Meal Logs table
 CREATE TABLE IF NOT EXISTS roomex_meals (
   id TEXT PRIMARY KEY,
-  room_id TEXT REFERENCES roomex_rooms(id) ON DELETE CASCADE,
+  room_id TEXT,
   date DATE NOT NULL,
   breakfast_count JSONB DEFAULT '{}',
   lunch_count JSONB DEFAULT '{}',
@@ -90,12 +138,11 @@ CREATE TABLE IF NOT EXISTS roomex_meals (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 5. Settlements table
 CREATE TABLE IF NOT EXISTS roomex_settlements (
   id TEXT PRIMARY KEY,
-  room_id TEXT REFERENCES roomex_rooms(id) ON DELETE CASCADE,
-  from_member_id TEXT REFERENCES roomex_members(id),
-  to_member_id TEXT REFERENCES roomex_members(id),
+  room_id TEXT,
+  from_member_id TEXT,
+  to_member_id TEXT,
   amount NUMERIC NOT NULL,
   date TIMESTAMPTZ DEFAULT now(),
   payment_method TEXT DEFAULT 'upi',
@@ -104,28 +151,21 @@ CREATE TABLE IF NOT EXISTS roomex_settlements (
   recorded_by TEXT
 );
 
--- 6. Audit & Admin Logs table
-CREATE TABLE IF NOT EXISTS roomex_audit_logs (
-  id TEXT PRIMARY KEY,
-  room_id TEXT REFERENCES roomex_rooms(id) ON DELETE CASCADE,
-  performed_by TEXT,
-  action TEXT NOT NULL,
-  details TEXT NOT NULL,
-  timestamp TIMESTAMPTZ DEFAULT now()
-);
-
--- Enable Row Level Security (RLS) or public policies for seamless app usage:
+-- Enable Row Level Security (RLS) policies
+ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE roomex_rooms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE roomex_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE roomex_expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE roomex_meals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE roomex_settlements ENABLE ROW LEVEL SECURITY;
-ALTER TABLE roomex_audit_logs ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Public full access roomex_rooms" ON roomex_rooms FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public full access roomex_members" ON roomex_members FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public full access roomex_expenses" ON roomex_expenses FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public full access roomex_meals" ON roomex_meals FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public full access roomex_settlements" ON roomex_settlements FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public full access roomex_audit_logs" ON roomex_audit_logs FOR ALL USING (true) WITH CHECK (true);
+-- Allow public read/write access so Members can login globally via Room Code + Username + Password
+CREATE POLICY "Allow public all rooms" ON rooms FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public all members" ON members FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public all roomex_rooms" ON roomex_rooms FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public all roomex_members" ON roomex_members FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public all roomex_expenses" ON roomex_expenses FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public all roomex_meals" ON roomex_meals FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow public all roomex_settlements" ON roomex_settlements FOR ALL USING (true) WITH CHECK (true);
 `;

@@ -64,6 +64,11 @@ export const CleaningSchedule: React.FC<CleaningScheduleProps> = ({
     }
   );
 
+  // Interval / Frequency configuration state
+  const [intervalFrequency, setIntervalFrequency] = useState<CleaningScheduleType['frequency']>(schedule.frequency || 'weekly');
+  const [customIntervalDays, setCustomIntervalDays] = useState<number>(schedule.intervalDays || 7);
+  const [intervalSavedToast, setIntervalSavedToast] = useState(false);
+
   const isAdmin = 
     activeMember.role === 'super_admin' || 
     activeMember.role === 'admin' || 
@@ -182,7 +187,7 @@ export const CleaningSchedule: React.FC<CleaningScheduleProps> = ({
     setSkipReason('');
   };
 
-  // Save Admin Duty Assignments
+  // Save Admin Duty Assignments & Cleaning Interval
   const handleSaveDutyAssignments = () => {
     const finalActiveDuty = customDutyText.trim() || selectedDutyArea;
     const updatedDuties = {
@@ -190,10 +195,19 @@ export const CleaningSchedule: React.FC<CleaningScheduleProps> = ({
       [schedule.currentMemberId]: finalActiveDuty,
     };
 
+    const intervalDaysCalculated = 
+      intervalFrequency === 'daily' ? 1 :
+      intervalFrequency === 'weekly' ? 7 :
+      intervalFrequency === 'bi_weekly' ? 14 :
+      intervalFrequency === 'monthly' ? 30 :
+      Math.max(1, customIntervalDays);
+
     const newSchedule: CleaningScheduleType = {
       ...schedule,
       dutyArea: finalActiveDuty,
       assignedDuties: updatedDuties,
+      frequency: intervalFrequency,
+      intervalDays: intervalDaysCalculated,
     };
 
     const historyEntry: CleaningHistoryEntry = {
@@ -205,11 +219,48 @@ export const CleaningSchedule: React.FC<CleaningScheduleProps> = ({
       date: new Date().toISOString().split('T')[0],
       timestamp: new Date().toISOString(),
       dutyArea: finalActiveDuty,
-      notes: `Admin assigned cleaning duty: "${finalActiveDuty}"`,
+      notes: `Admin assigned cleaning duty: "${finalActiveDuty}" and set rotation interval to ${intervalFrequency} (${intervalDaysCalculated} days)`,
     };
 
     onUpdateSchedule(newSchedule, historyEntry);
     setAssignModalOpen(false);
+    setIntervalSavedToast(true);
+    setTimeout(() => setIntervalSavedToast(false), 3000);
+  };
+
+  const handleQuickChangeInterval = (freq: CleaningScheduleType['frequency'], days?: number) => {
+    if (!isAdmin) return;
+    const intervalDaysCalculated = 
+      freq === 'daily' ? 1 :
+      freq === 'weekly' ? 7 :
+      freq === 'bi_weekly' ? 14 :
+      freq === 'monthly' ? 30 :
+      Math.max(1, days || customIntervalDays || 3);
+
+    setIntervalFrequency(freq);
+    if (days) setCustomIntervalDays(days);
+
+    const newSchedule: CleaningScheduleType = {
+      ...schedule,
+      frequency: freq,
+      intervalDays: intervalDaysCalculated,
+    };
+
+    const historyEntry: CleaningHistoryEntry = {
+      id: `interval_change_${Date.now()}`,
+      roomId: settings.id,
+      memberId: activeMember.id,
+      memberName: activeMember.name,
+      action: 'completed',
+      date: new Date().toISOString().split('T')[0],
+      timestamp: new Date().toISOString(),
+      dutyArea: currentDutyArea,
+      notes: `Admin updated cleaning interval to ${freq.replace('_', ' ')} (${intervalDaysCalculated} days)`,
+    };
+
+    onUpdateSchedule(newSchedule, historyEntry);
+    setIntervalSavedToast(true);
+    setTimeout(() => setIntervalSavedToast(false), 3000);
   };
 
   // WhatsApp Badge Share Text
@@ -265,25 +316,48 @@ export const CleaningSchedule: React.FC<CleaningScheduleProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+              {isAdmin && (
+                <div className="flex items-center gap-1.5 bg-slate-950/90 border border-white/10 p-1 rounded-xl">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 px-1 font-mono">Interval:</span>
+                  {(['daily', 'weekly', 'bi_weekly', 'monthly'] as const).map(f => (
+                    <button
+                      key={f}
+                      onClick={() => handleQuickChangeInterval(f)}
+                      className={`px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase transition-all cursor-pointer ${
+                        schedule.frequency === f
+                          ? 'bg-emerald-500 text-slate-950 font-black shadow'
+                          : 'text-slate-400 hover:text-white hover:bg-white/5'
+                      }`}
+                    >
+                      {f === 'bi_weekly' ? '2-Wks' : f.replace('_', ' ')}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {isAdmin && (
                 <button
                   type="button"
                   onClick={() => {
                     setSelectedDutyArea(currentDutyArea);
+                    setIntervalFrequency(schedule.frequency || 'weekly');
+                    setCustomIntervalDays(schedule.intervalDays || 7);
                     setAssignModalOpen(true);
                   }}
-                  className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-bold border border-amber-500/30 flex items-center gap-1.5 transition-all shadow"
-                  title="Assign specific cleaning duties (Bathroom, Flat, Kitchen, etc.)"
+                  className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-bold border border-amber-500/30 flex items-center gap-1.5 transition-all shadow cursor-pointer"
+                  title="Assign specific cleaning duties & configure rotation intervals"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>Assign Duty (Admin)</span>
+                  <span>Configure Rota & Intervals (Admin)</span>
                 </button>
               )}
 
-              <div className="text-right">
+              <div className="text-right pl-1">
                 <span className="text-[10px] text-slate-400 font-mono block">Frequency</span>
-                <span className="text-xs font-bold text-indigo-300 capitalize font-mono">{schedule.frequency} Turn</span>
+                <span className="text-xs font-bold text-emerald-300 capitalize font-mono">
+                  {schedule.frequency ? schedule.frequency.replace('_', ' ') : 'Weekly'} ({schedule.intervalDays || 7}d)
+                </span>
               </div>
             </div>
           </div>
@@ -682,7 +756,7 @@ export const CleaningSchedule: React.FC<CleaningScheduleProps> = ({
               <label className="block text-xs font-semibold text-slate-200">
                 2. Customize Assigned Duties for Each Roommate:
               </label>
-              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
                 {members.map((m) => (
                   <div key={m.id} className="flex items-center justify-between gap-3 p-2 rounded-xl bg-slate-950/70 border border-white/10">
                     <div className="flex items-center gap-2 min-w-0">
@@ -706,6 +780,50 @@ export const CleaningSchedule: React.FC<CleaningScheduleProps> = ({
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* 3. Configure Rotation Interval */}
+            <div className="space-y-2 pt-2 border-t border-white/10">
+              <label className="block text-xs font-semibold text-slate-200">
+                3. Rotation Interval & Frequency (Admin):
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                {[
+                  { key: 'daily', label: 'Daily (1d)' },
+                  { key: 'weekly', label: 'Weekly (7d)' },
+                  { key: 'bi_weekly', label: 'Bi-Weekly (14d)' },
+                  { key: 'monthly', label: 'Monthly (30d)' },
+                  { key: 'custom_days', label: 'Custom Days' },
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setIntervalFrequency(item.key as any)}
+                    className={`py-2 px-2 rounded-xl border text-xs font-bold text-center transition-all cursor-pointer ${
+                      intervalFrequency === item.key
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md font-black'
+                        : 'bg-slate-950/60 border-white/10 text-slate-300 hover:bg-white/5'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+
+              {intervalFrequency === 'custom_days' && (
+                <div className="flex items-center gap-2 pt-1 bg-slate-950/60 p-2.5 rounded-xl border border-white/10">
+                  <span className="text-xs text-slate-300">Rotate cleaning turn every:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="90"
+                    value={customIntervalDays}
+                    onChange={(e) => setCustomIntervalDays(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-20 bg-slate-900 border border-amber-500/50 rounded-lg px-2.5 py-1 text-xs text-amber-300 font-bold focus:outline-none"
+                  />
+                  <span className="text-xs text-slate-400 font-mono">days</span>
+                </div>
+              )}
             </div>
 
             {/* Save Button */}

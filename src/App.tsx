@@ -28,7 +28,9 @@ import {
   Layers, 
   Sparkle,
   Crown,
-  LayoutDashboard
+  LayoutDashboard,
+  Camera,
+  ShieldCheck
 } from 'lucide-react';
 import { 
   RoomData, 
@@ -57,7 +59,7 @@ import {
   calculateMessMetrics, 
   calculateNetBalances 
 } from './lib/storage';
-import { SupabaseSyncStatus } from './lib/supabase';
+import { SupabaseSyncStatus, supabase } from './lib/supabase';
 import { 
   initPWA, 
   subscribeToInstallPrompt, 
@@ -79,6 +81,7 @@ import { AdminDelegationModal } from './components/AdminDelegationModal';
 import { RoomSettingsModal } from './components/RoomSettingsModal';
 import { MemberDashboard } from './components/MemberDashboard';
 import { SuperAdminTab } from './components/SuperAdminTab';
+import { ProfilePhotoModal } from './components/ProfilePhotoModal';
 import { AppLogo } from './components/AppLogo';
 
 const AUTH_STORAGE_KEY = 'roomex_auth_user_v1';
@@ -112,6 +115,8 @@ export default function App() {
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isProfilePhotoModalOpen, setIsProfilePhotoModalOpen] = useState(false);
+  const [profilePhotoTargetMember, setProfilePhotoTargetMember] = useState<Member | null>(null);
 
   // Supabase sync status
   const [supabaseStatus, setSupabaseStatus] = useState<SupabaseSyncStatus>({
@@ -184,16 +189,142 @@ export default function App() {
     } catch {}
   };
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn('Supabase sign out error:', err);
+    }
     try {
       localStorage.removeItem(AUTH_STORAGE_KEY);
     } catch {}
     setAuthUser(null);
+    if (typeof window !== 'undefined' && window.history) {
+      window.history.replaceState({}, '', '/login');
+    }
   };
 
-  // Sync state to localStorage whenever roomData changes
+  // Protect private pages with supabase.auth.getSession() — if no session, redirect to /login
+  useEffect(() => {
+    let isMounted = true;
+
+    const verifySessionAndProtect = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (!session) {
+          // Check if there is an active local member or admin session stored in localStorage
+          const localUserRaw = typeof window !== 'undefined' ? localStorage.getItem(AUTH_STORAGE_KEY) : null;
+          const hasLocalSession = !!localUserRaw;
+
+          if (!hasLocalSession && !authUser) {
+            // If neither Supabase session nor local member session exists, protect private route
+            const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+            if (currentPath !== '/login' && currentPath !== '/signup' && currentPath !== '/member-login') {
+              if (typeof window !== 'undefined' && window.history) {
+                window.history.replaceState({}, '', '/login');
+              }
+            }
+          }
+        } else {
+          // A real Supabase session exists!
+          const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+          if (currentPath === '/login' || currentPath === '/signup' || currentPath === '/member-login') {
+            if (typeof window !== 'undefined' && window.history) {
+              window.history.replaceState({}, '', '/');
+            }
+          }
+
+          // Hydrate authUser from active session if needed
+          if (!authUser && isMounted) {
+            const user = session.user;
+            const displayName = 
+              user.user_metadata?.name || 
+              user.user_metadata?.full_name || 
+              user.email?.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) || 
+              'Admin';
+
+            const authU: AuthUser = {
+              id: user.id,
+              memberId: user.id,
+              email: user.email || '',
+              name: displayName,
+              avatar: user.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+              role: 'super_admin',
+              roomCode: roomData.settings.roomCode || 'ROOM101',
+            };
+            handleLogin(authU);
+          }
+        }
+      } catch (err) {
+        console.warn('Supabase getSession verification error:', err);
+      }
+    };
+
+    verifySessionAndProtect();
+
+    // Listen for auth state changes (e.g. email confirmation token confirmed, sign in, sign out)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!isMounted) return;
+
+      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') && session) {
+        const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+        if (currentPath === '/login' || currentPath === '/signup') {
+          if (typeof window !== 'undefined' && window.history) {
+            window.history.replaceState({}, '', '/');
+          }
+        }
+
+        if (!authUser) {
+          const user = session.user;
+          const displayName = 
+            user.user_metadata?.name || 
+            user.user_metadata?.full_name || 
+            user.email?.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) || 
+            'Admin';
+
+          const authU: AuthUser = {
+            id: user.id,
+            memberId: user.id,
+            email: user.email || '',
+            name: displayName,
+            avatar: user.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+            role: 'super_admin',
+            roomCode: roomData.settings.roomCode || 'ROOM101',
+          };
+          handleLogin(authU);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setAuthUser(null);
+        try {
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+        } catch {}
+        if (typeof window !== 'undefined' && window.history) {
+          window.history.replaceState({}, '', '/login');
+        }
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  // Sync state to localStorage & Supabase whenever roomData changes
   useEffect(() => {
     saveRoomData(roomData);
+    if (roomData.settings?.roomCode && roomData.members.length > 0) {
+      syncRoomWithSupabase(roomData).then(result => {
+        setSupabaseStatus(prev => ({
+          ...prev,
+          connected: result.success,
+          lastSyncedAt: result.success ? new Date().toLocaleTimeString() : prev.lastSyncedAt,
+          syncing: false,
+          error: result.success ? null : result.message,
+        }));
+      });
+    }
   }, [roomData]);
 
   // Initial Supabase Sync & PWA setup
@@ -340,12 +471,46 @@ export default function App() {
     }));
   };
 
-  // Stayed Days Handler (User Rule: Admin only modifies)
+  // Stayed Days Handler (User Rule: Admin only modifies - affects all mess calculation immediately)
   const handleUpdateMemberDaysStayed = (memberId: string, days: number) => {
-    setRoomData(prev => ({
-      ...prev,
-      members: prev.members.map(m => m.id === memberId ? { ...m, daysStayedInMonth: days } : m),
-    }));
+    const validDays = Math.max(0, Math.min(roomData.settings.daysInMonth || 31, days));
+    setRoomData(prev => {
+      const updatedMembers = prev.members.map(m => 
+        m.id === memberId 
+          ? { ...m, daysStayed: validDays, daysStayedInMonth: validDays } 
+          : m
+      );
+      const updatedRoom: RoomData = {
+        ...prev,
+        members: updatedMembers,
+      };
+      syncRoomWithSupabase(updatedRoom);
+      return updatedRoom;
+    });
+  };
+
+  // Profile Photo Avatar Handler (User Rule: Option to add profile photo of member and admin)
+  const handleUpdateMemberAvatar = (memberId: string, avatarUrl: string) => {
+    setRoomData(prev => {
+      const updatedMembers = prev.members.map(m => 
+        m.id === memberId ? { ...m, avatar: avatarUrl } : m
+      );
+      const updatedRoom: RoomData = {
+        ...prev,
+        members: updatedMembers,
+      };
+      syncRoomWithSupabase(updatedRoom);
+      return updatedRoom;
+    });
+
+    if (authUser && (authUser.memberId === memberId || authUser.id === memberId)) {
+      const updatedUser: AuthUser = {
+        ...authUser,
+        avatar: avatarUrl,
+      };
+      setAuthUser(updatedUser);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(updatedUser));
+    }
   };
 
   // Membership Type Handler (User Rule: Admin sets Both / Rent Only / Mess Only)
@@ -544,15 +709,61 @@ export default function App() {
     // Update cleaning rota order with new member
     const updatedRota = [...(roomData.cleaningSchedule?.rotaOrder || roomData.members.map(m => m.id)), newId];
 
-    setRoomData(prev => ({
-      ...prev,
-      members: [...prev.members, newMember],
+    const updatedRoom: RoomData = {
+      ...roomData,
+      members: [...roomData.members, newMember],
       cleaningSchedule: {
-        ...(prev.cleaningSchedule || INITIAL_ROOM_DATA.cleaningSchedule),
+        ...(roomData.cleaningSchedule || INITIAL_ROOM_DATA.cleaningSchedule),
         rotaOrder: updatedRota,
       },
-      auditLogs: [newAuditLog, ...prev.auditLogs],
-    }));
+      auditLogs: [newAuditLog, ...roomData.auditLogs],
+    };
+
+    setRoomData(updatedRoom);
+    syncRoomWithSupabase(updatedRoom);
+  };
+
+  // Update / Reset Roommate Login Credentials
+  const handleUpdateMemberCredentials = (memberId: string, username: string, password?: string) => {
+    const cleanUsername = username.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cleanPassword = (password || '').trim();
+
+    setRoomData(prev => {
+      const targetMember = prev.members.find(m => m.id === memberId);
+      const newPass = cleanPassword || targetMember?.allocatedPassword || targetMember?.password || 'password123';
+      const newUName = cleanUsername || targetMember?.username || targetMember?.name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'member';
+
+      const updatedMembers = prev.members.map(m => {
+        if (m.id === memberId) {
+          return {
+            ...m,
+            username: newUName,
+            password: newPass,
+            allocatedPassword: newPass,
+          };
+        }
+        return m;
+      });
+
+      const auditEntry: AuditLog = {
+        id: `log_${Date.now()}`,
+        roomId: prev.settings.id,
+        actorId: activeMember?.id || 'admin',
+        actorName: activeMember?.name || 'Super Admin',
+        action: 'role_changed',
+        details: `Updated login credentials for "${targetMember?.name || 'roommate'}" (@${newUName})`,
+        timestamp: new Date().toISOString(),
+      };
+
+      const updated: RoomData = {
+        ...prev,
+        members: updatedMembers,
+        auditLogs: [auditEntry, ...prev.auditLogs],
+      };
+
+      syncRoomWithSupabase(updated);
+      return updated;
+    });
   };
 
   // Create New Room when Super Admin registers with Email & Password
@@ -948,7 +1159,7 @@ export default function App() {
   const totalSpent = roomData.expenses.reduce((s, e) => s + e.amount, 0);
   const daysInMonth = roomData.settings.daysInMonth || 30;
   const messMetrics = calculateMessMetrics(roomData.expenses, roomData.meals, roomData.members, daysInMonth);
-  const netBalances = calculateNetBalances(roomData.members, roomData.expenses, roomData.settlements);
+  const netBalances = calculateNetBalances(roomData.members, roomData.expenses, roomData.settlements, roomData.settings);
   const activeNet = netBalances[activeMember.id] || 0;
   const activeMessDue = messMetrics.memberDaysBreakdown[activeMember.id]?.cost || 0;
   const activeDays = messMetrics.memberDaysBreakdown[activeMember.id]?.daysStayed ?? daysInMonth;
@@ -962,11 +1173,15 @@ export default function App() {
         members={roomData.members}
         activeMember={activeMember}
         onSelectActiveMember={handleSelectActiveMember}
+        onOpenProfilePhoto={() => {
+          setProfilePhotoTargetMember(activeMember);
+          setIsProfilePhotoModalOpen(true);
+        }}
         onOpenAddExpense={() => {
           setEditingExpense(null);
           setIsAddExpenseOpen(true);
         }}
-        onOpenAdminModal={() => setIsAdminModalOpen(true)}
+        onOpenAdminModal={() => setActiveTab('super_admin')}
         onOpenRoomSettings={() => setIsSettingsModalOpen(true)}
         supabaseStatus={supabaseStatus}
         onManualSync={handleSyncSupabase}
@@ -984,11 +1199,23 @@ export default function App() {
             
             {/* User Identity Info */}
             <div className="flex items-center gap-3">
-              <img 
-                src={activeMember.avatar} 
-                alt={activeMember.name} 
-                className="w-12 h-12 rounded-2xl object-cover border-2 border-indigo-400/60 shadow-lg"
-              />
+              <div 
+                onClick={() => {
+                  setProfilePhotoTargetMember(activeMember);
+                  setIsProfilePhotoModalOpen(true);
+                }}
+                className="relative group cursor-pointer shrink-0"
+                title="Click to update your profile photo"
+              >
+                <img 
+                  src={activeMember.avatar} 
+                  alt={activeMember.name} 
+                  className="w-12 h-12 rounded-2xl object-cover border-2 border-indigo-400/60 shadow-lg group-hover:border-indigo-300 transition-all"
+                />
+                <div className="absolute inset-0 rounded-2xl bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity">
+                  <Camera className="w-4 h-4" />
+                </div>
+              </div>
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-base sm:text-lg font-black text-white">{activeMember.name}</h2>
@@ -1163,8 +1390,8 @@ export default function App() {
               <span>PDF & Reports</span>
             </button>
 
-            {/* 6. Requirement 1: Super Admin Tab (VISIBLE ONLY TO SUPER ADMIN) */}
-            {activeMember.role === 'super_admin' && (
+            {/* 6. Unified Admin & Super Admin Master Tab */}
+            {(activeMember.role === 'super_admin' || activeMember.role === 'admin') && (
               <button
                 onClick={() => setActiveTab('super_admin')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
@@ -1173,10 +1400,14 @@ export default function App() {
                     : 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 border border-amber-500/30'
                 }`}
               >
-                <Crown className="w-4 h-4" />
-                <span>Super Admin</span>
+                {activeMember.role === 'super_admin' ? (
+                  <Crown className="w-4 h-4 text-amber-400" />
+                ) : (
+                  <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                )}
+                <span>{activeMember.role === 'super_admin' ? 'Super Admin' : 'Admin Center'}</span>
                 <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.2 rounded bg-amber-950/80 text-amber-200 border border-amber-400/40">
-                  Master
+                  {activeMember.role === 'super_admin' ? 'Master' : 'Roles'}
                 </span>
               </button>
             )}
@@ -1307,6 +1538,8 @@ export default function App() {
             onBulkUpdateParticipation={handleBulkUpdateParticipation}
             onUpdateMemberCustomRent={handleUpdateMemberCustomRent}
             onUpdatePresetRent={handleUpdatePresetRent}
+            onUpdateMemberCredentials={handleUpdateMemberCredentials}
+            onUpdateMemberAvatar={handleUpdateMemberAvatar}
           />
         )}
 
@@ -1419,8 +1652,8 @@ export default function App() {
           <span className="text-[9px] tracking-tight mt-0.5">Purchases</span>
         </button>
 
-        {/* 4. Super Admin OR Reports */}
-        {activeMember.role === 'super_admin' ? (
+        {/* 4. Super Admin / Admin OR Reports */}
+        {(activeMember.role === 'super_admin' || activeMember.role === 'admin') ? (
           <button
             onClick={() => setActiveTab('super_admin')}
             className={`flex-1 flex flex-col items-center justify-center py-1 rounded-xl transition-all min-h-[46px] ${
@@ -1428,9 +1661,15 @@ export default function App() {
             }`}
           >
             <div className={`p-1 rounded-lg ${activeTab === 'super_admin' ? 'bg-amber-500/20 text-amber-400' : ''}`}>
-              <Crown className="w-4 h-4 text-amber-400" />
+              {activeMember.role === 'super_admin' ? (
+                <Crown className="w-4 h-4 text-amber-400" />
+              ) : (
+                <ShieldCheck className="w-4 h-4 text-indigo-400" />
+              )}
             </div>
-            <span className="text-[9px] tracking-tight mt-0.5 text-amber-400">Super Admin</span>
+            <span className="text-[9px] tracking-tight mt-0.5 text-amber-400">
+              {activeMember.role === 'super_admin' ? 'Super Admin' : 'Admin'}
+            </span>
           </button>
         ) : (
           <button
@@ -1485,6 +1724,22 @@ export default function App() {
         onResetData={handleResetData}
         canInstallPWA={canInstallPWA}
         onInstallPWA={handleInstallPWA}
+      />
+
+      <ProfilePhotoModal
+        isOpen={isProfilePhotoModalOpen}
+        onClose={() => {
+          setIsProfilePhotoModalOpen(false);
+          setProfilePhotoTargetMember(null);
+        }}
+        currentAvatar={profilePhotoTargetMember?.avatar || activeMember.avatar}
+        memberName={profilePhotoTargetMember?.name || activeMember.name}
+        onSaveAvatar={(newAvatar) => {
+          const targetId = profilePhotoTargetMember?.id || activeMember.id;
+          handleUpdateMemberAvatar(targetId, newAvatar);
+          setIsProfilePhotoModalOpen(false);
+          setProfilePhotoTargetMember(null);
+        }}
       />
 
     </div>

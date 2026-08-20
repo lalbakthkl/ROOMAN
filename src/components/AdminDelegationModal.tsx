@@ -371,17 +371,6 @@ export const AdminDelegationModal: React.FC<AdminDelegationModalProps> = ({
 
                         {/* Actions & Role Selector Buttons */}
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          
-                          {/* Switch Active Member Shortcut */}
-                          {isActorAdmin && onSelectActiveMember && !isCurrentActive && (
-                            <button
-                              onClick={() => onSelectActiveMember(member.id)}
-                              className="px-2.5 py-1 text-xs rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white border border-white/10 font-medium cursor-pointer"
-                              title="Switch active session to this member"
-                            >
-                              Act as User
-                            </button>
-                          )}
 
                           {/* Role Selector Buttons */}
                           <button

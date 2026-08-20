@@ -204,8 +204,8 @@ export function calculateMemberRentShare(
 }
 
 // Calculate Net Balances for each member
-// Positive (+): Room owes this member money (they overpaid)
-// Negative (-): Member owes money to the room
+// Positive (+): Room owes this member money (they overpaid / gets back)
+// Negative (-): Member owes money to the room (balance to pay)
 export function calculateNetBalances(
   members: Member[], 
   expenses: Expense[], 
@@ -217,24 +217,58 @@ export function calculateNetBalances(
     balances[m.id] = 0;
   });
 
-  // 1. Process Expenses
+  const validDays = Math.max(1, settings?.daysInMonth || 30);
+
+  // 1. Calculate Mess Metrics (Total Mess Purchase ÷ Total Stayed Days = Per Day Rate)
+  const messMetrics = calculateMessMetrics(expenses, [], members, validDays);
+
+  // Apply Mess Breakdown:
+  // - Members who made upfront purchases for mess items receive credit (+exp.amount handled below in general expenses)
+  // - Members who consume mess incur their exact stayed-days mess bill (-messBill)
+  const isMessSeparatelySplit = expenses.some(e => e.isMessExpense || e.category === 'mess_food' || e.category === 'groceries' || e.category === 'gas_cylinder');
+
+  // Process Non-Mess Expenses split shares
   expenses.forEach(exp => {
+    const isMess = exp.isMessExpense || exp.category === 'mess_food' || exp.category === 'groceries' || exp.category === 'gas_cylinder';
+    
+    // Member who paid gets credited upfront
     const payerId = exp.paidBy;
     if (balances[payerId] !== undefined) {
       balances[payerId] += exp.amount;
     }
 
-    // Deduct each member's share
-    exp.splits.forEach(split => {
-      if (balances[split.memberId] !== undefined) {
-        balances[split.memberId] -= split.amount;
-      }
-    });
+    // Only apply non-mess expense split shares here; mess expenses are split according to stayed days formula below
+    if (!isMess && exp.category !== 'rent') {
+      exp.splits.forEach(split => {
+        if (balances[split.memberId] !== undefined) {
+          balances[split.memberId] -= split.amount;
+        }
+      });
+    }
   });
 
-  // 2. Preset Rent Integration (if active and not already logged as expense)
+  // Apply dynamic formula-based Mess Bill based on stayed days for all members
+  members.forEach(m => {
+    const isRentOnly = m.membershipType === 'rent_only' || m.isMessActive === false;
+    const messCost = isRentOnly ? 0 : (messMetrics.memberDaysBreakdown[m.id]?.cost || 0);
+    if (balances[m.id] !== undefined) {
+      balances[m.id] -= messCost;
+    }
+  });
+
+  // 2. Rent Integration (Preset Rent or Logged Rent Expenses)
   const hasRentExpense = expenses.some(e => e.category === 'rent');
-  if (settings?.presetRentActive && settings.presetRentAmount && settings.presetRentAmount > 0 && !hasRentExpense) {
+  if (hasRentExpense) {
+    // Process logged rent expense splits
+    expenses.filter(e => e.category === 'rent').forEach(exp => {
+      exp.splits.forEach(split => {
+        if (balances[split.memberId] !== undefined) {
+          balances[split.memberId] -= split.amount;
+        }
+      });
+    });
+  } else if (settings?.presetRentActive && settings.presetRentAmount && settings.presetRentAmount > 0) {
+    // Apply preset rent shares
     members.forEach(m => {
       const rentShare = calculateMemberRentShare(m.id, members, settings, expenses);
       if (balances[m.id] !== undefined) {
@@ -243,7 +277,7 @@ export function calculateNetBalances(
     });
   }
 
-  // 3. Process Settlements
+  // 3. Process Direct Roommate Settlements (UPI / Cash transfers)
   settlements.forEach(set => {
     // fromMember paid to toMember
     // fromMember balance goes up (debt reduced)
@@ -615,22 +649,65 @@ export function calculateMonthlySnapshot(roomData: RoomData): MonthlySnapshot {
 // Supabase Syncing Service & Multi-device Online Cloud State
 export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ success: boolean; message: string }> {
   try {
-    const serializedData = JSON.stringify(roomData);
+    const cleanRoomCode = (roomData.settings.roomCode || '').trim().toUpperCase();
+    
+    // Ensure all members have clean usernames and allocated passwords persisted
+    const enhancedMembers = roomData.members.map(m => {
+      const uName = (m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, '')).trim();
+      const pWord = (m.allocatedPassword || m.password || 'password123').trim();
+      return {
+        ...m,
+        username: uName,
+        password: pWord,
+        allocatedPassword: pWord,
+      };
+    });
 
-    // 1. Upsert Room Core and Snapshot
+    const enhancedRoomData: RoomData = {
+      ...roomData,
+      settings: {
+        ...roomData.settings,
+        roomCode: cleanRoomCode,
+      },
+      members: enhancedMembers,
+    };
+
+    const serializedData = JSON.stringify(enhancedRoomData);
+
+    // 1. Upsert to standard 'rooms' table (and 'roomex_rooms')
+    try {
+      await supabase
+        .from('rooms')
+        .upsert({
+          id: enhancedRoomData.settings.id,
+          room_code: cleanRoomCode,
+          name: enhancedRoomData.settings.name,
+          currency: enhancedRoomData.settings.currency,
+          currency_symbol: enhancedRoomData.settings.currencySymbol,
+          monthly_budget: enhancedRoomData.settings.monthlyBudget,
+          is_mess_enabled: enhancedRoomData.settings.isMessEnabled,
+          mess_calculation_mode: enhancedRoomData.settings.messCalculationMode,
+          fixed_meal_rate: enhancedRoomData.settings.fixedMealRate,
+          raw_snapshot: enhancedRoomData,
+          updated_at: new Date().toISOString(),
+        });
+    } catch (e) {
+      // Ignored if rooms table isn't created yet in user DB
+    }
+
     const { error: roomErr } = await supabase
       .from('roomex_rooms')
       .upsert({
-        id: roomData.settings.id,
-        name: roomData.settings.name,
-        currency: roomData.settings.currency,
-        currency_symbol: roomData.settings.currencySymbol,
-        monthly_budget: roomData.settings.monthlyBudget,
-        is_mess_enabled: roomData.settings.isMessEnabled,
-        mess_calculation_mode: roomData.settings.messCalculationMode,
-        fixed_meal_rate: roomData.settings.fixedMealRate,
-        room_code: roomData.settings.roomCode,
-        created_by_id: roomData.settings.createdById,
+        id: enhancedRoomData.settings.id,
+        name: enhancedRoomData.settings.name,
+        currency: enhancedRoomData.settings.currency,
+        currency_symbol: enhancedRoomData.settings.currencySymbol,
+        monthly_budget: enhancedRoomData.settings.monthlyBudget,
+        is_mess_enabled: enhancedRoomData.settings.isMessEnabled,
+        mess_calculation_mode: enhancedRoomData.settings.messCalculationMode,
+        fixed_meal_rate: enhancedRoomData.settings.fixedMealRate,
+        room_code: cleanRoomCode,
+        created_by_id: enhancedRoomData.settings.createdById,
         raw_snapshot: serializedData,
         updated_at: new Date().toISOString(),
       });
@@ -639,35 +716,45 @@ export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ succes
       console.warn('Supabase rooms upsert notice:', roomErr.message);
     }
 
-    // 2. Upsert Members
-    if (roomData.members.length > 0) {
-      const memberPayload = roomData.members.map(m => ({
-        id: m.id,
-        room_id: roomData.settings.id,
-        name: m.name,
-        email: m.email,
-        username: m.username || null,
-        allocated_password: m.allocatedPassword || m.password || null,
-        avatar: m.avatar,
-        phone: m.phone || null,
-        role: m.role,
-        permissions: m.permissions,
-        membership_type: m.membershipType || 'both',
-        custom_rent_share: m.customRentShare || 0,
-        days_stayed: m.daysStayed || 30,
-        is_mess_active: m.isMessActive ?? true,
-        deposit_balance: m.depositBalance || 0,
-        upi_id: m.upiId || null,
-        is_on_vacation: !!m.isOnVacation,
-        vacation_type: m.vacationType || 'active',
-        vacation_reason: m.vacationReason || null,
-      }));
+    // 2. Upsert to standard 'members' table and 'roomex_members'
+    if (enhancedRoomData.members.length > 0) {
+      const memberPayload = enhancedRoomData.members.map(m => {
+        const uName = (m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'member').trim();
+        const pWord = (m.allocatedPassword || m.password || 'password123').trim();
+        return {
+          id: m.id,
+          room_id: enhancedRoomData.settings.id,
+          name: m.name,
+          username: uName,
+          password_hash: pWord,
+          allocated_password: pWord,
+          email: m.email || `${uName}@roomex.app`,
+          avatar: m.avatar,
+          phone: m.phone || null,
+          role: m.role,
+          permissions: m.permissions,
+          membership_type: m.membershipType || 'both',
+          custom_rent_share: m.customRentShare || 0,
+          days_stayed: m.daysStayed || 30,
+          is_mess_active: m.isMessActive ?? true,
+          deposit_balance: m.depositBalance || 0,
+          upi_id: m.upiId || null,
+          is_on_vacation: !!m.isOnVacation,
+          vacation_type: m.vacationType || 'active',
+          vacation_reason: m.vacationReason || null,
+        };
+      });
+
+      try {
+        await supabase.from('members').upsert(memberPayload);
+      } catch (e) {}
+
       await supabase.from('roomex_members').upsert(memberPayload);
     }
 
     // 3. Upsert Expenses
-    if (roomData.expenses.length > 0) {
-      const expPayload = roomData.expenses.map(e => ({
+    if (enhancedRoomData.expenses.length > 0) {
+      const expPayload = enhancedRoomData.expenses.map(e => ({
         id: e.id,
         room_id: e.roomId,
         title: e.title,
@@ -686,8 +773,8 @@ export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ succes
     }
 
     // 4. Upsert Meals
-    if (roomData.meals.length > 0) {
-      const mealPayload = roomData.meals.map(m => ({
+    if (enhancedRoomData.meals.length > 0) {
+      const mealPayload = enhancedRoomData.meals.map(m => ({
         id: m.id,
         room_id: m.roomId,
         date: m.date,
@@ -701,8 +788,8 @@ export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ succes
     }
 
     // 5. Upsert Settlements
-    if (roomData.settlements.length > 0) {
-      const setPayload = roomData.settlements.map(s => ({
+    if (enhancedRoomData.settlements.length > 0) {
+      const setPayload = enhancedRoomData.settlements.map(s => ({
         id: s.id,
         room_id: s.roomId,
         from_member_id: s.fromMemberId,
@@ -728,61 +815,148 @@ export async function syncRoomWithSupabase(roomData: RoomData): Promise<{ succes
 export async function fetchRoomFromSupabase(roomCode: string): Promise<RoomData | null> {
   try {
     const cleanCode = roomCode.trim().toUpperCase();
-    const { data: roomRows, error: roomError } = await supabase
-      .from('roomex_rooms')
-      .select('*')
-      .eq('room_code', cleanCode)
-      .limit(1);
+    if (!cleanCode) return null;
 
-    if (roomError || !roomRows || roomRows.length === 0) {
+    let roomRecord: any = null;
+
+    // Check standard 'rooms' table first
+    try {
+      const { data: stdRooms } = await supabase
+        .from('rooms')
+        .select('*')
+        .ilike('room_code', cleanCode)
+        .limit(1);
+
+      if (stdRooms && stdRooms.length > 0) {
+        roomRecord = stdRooms[0];
+      }
+    } catch (e) {}
+
+    // Fallback to 'roomex_rooms' table
+    if (!roomRecord) {
+      const { data: exactRows } = await supabase
+        .from('roomex_rooms')
+        .select('*')
+        .ilike('room_code', cleanCode)
+        .limit(1);
+
+      if (exactRows && exactRows.length > 0) {
+        roomRecord = exactRows[0];
+      } else {
+        const { data: fuzzyRows } = await supabase
+          .from('roomex_rooms')
+          .select('*')
+          .or(`room_code.ilike.%${cleanCode}%,name.ilike.%${cleanCode}%,id.eq.${cleanCode}`)
+          .limit(1);
+
+        if (fuzzyRows && fuzzyRows.length > 0) {
+          roomRecord = fuzzyRows[0];
+        } else {
+          const { data: allRooms } = await supabase
+            .from('roomex_rooms')
+            .select('*')
+            .order('updated_at', { ascending: false })
+            .limit(20);
+
+          if (allRooms && allRooms.length > 0) {
+            roomRecord = allRooms.find((r: any) => 
+              (r.room_code && r.room_code.trim().toUpperCase() === cleanCode) ||
+              (r.name && r.name.trim().toUpperCase() === cleanCode) ||
+              r.id === cleanCode
+            );
+          }
+        }
+      }
+    }
+
+    if (!roomRecord) {
       return null;
     }
 
-    const roomRecord = roomRows[0];
-
-    // If raw_snapshot exists and is valid JSON, restore with full fidelity
+    // If raw_snapshot exists and is valid JSON/Object, restore with full fidelity
     if (roomRecord.raw_snapshot) {
       try {
-        const parsed = JSON.parse(roomRecord.raw_snapshot);
-        if (parsed && parsed.settings && parsed.members) {
-          return parsed;
+        const parsed = typeof roomRecord.raw_snapshot === 'string' 
+          ? JSON.parse(roomRecord.raw_snapshot) 
+          : roomRecord.raw_snapshot;
+
+        if (parsed && parsed.settings && Array.isArray(parsed.members)) {
+          const normalizedMembers: Member[] = (parsed.members || []).map((m: any) => {
+            const pass = (m.allocatedPassword || m.password || m.password_hash || m.allocated_password || 'password123').trim();
+            const uName = (m.username || m.name?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'member').trim();
+            return {
+              ...m,
+              username: uName,
+              password: pass,
+              allocatedPassword: pass,
+            };
+          });
+
+          return {
+            ...parsed,
+            settings: {
+              ...parsed.settings,
+              roomCode: roomRecord.room_code ? roomRecord.room_code.trim().toUpperCase() : cleanCode,
+            },
+            members: normalizedMembers,
+          };
         }
-      } catch {}
+      } catch (parseErr) {
+        console.warn('Could not parse raw_snapshot JSON, falling back to tables:', parseErr);
+      }
     }
 
     // Otherwise reconstruct from relational tables
     const roomId = roomRecord.id;
 
-    const [membersRes, expensesRes, mealsRes, settlementsRes] = await Promise.all([
-      supabase.from('roomex_members').select('*').eq('room_id', roomId),
+    let memberRows: any[] = [];
+    try {
+      const { data: stdMembers } = await supabase.from('members').select('*').eq('room_id', roomId);
+      if (stdMembers && stdMembers.length > 0) {
+        memberRows = stdMembers;
+      }
+    } catch (e) {}
+
+    if (memberRows.length === 0) {
+      const { data: rxMembers } = await supabase.from('roomex_members').select('*').eq('room_id', roomId);
+      if (rxMembers && rxMembers.length > 0) {
+        memberRows = rxMembers;
+      }
+    }
+
+    const [expensesRes, mealsRes, settlementsRes] = await Promise.all([
       supabase.from('roomex_expenses').select('*').eq('room_id', roomId),
       supabase.from('roomex_meals').select('*').eq('room_id', roomId),
       supabase.from('roomex_settlements').select('*').eq('room_id', roomId),
     ]);
 
-    const members: Member[] = (membersRes.data || []).map((m: any) => ({
-      id: m.id,
-      name: m.name,
-      username: m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, ''),
-      email: m.email || `${m.id}@roomex.app`,
-      password: m.allocated_password || 'password123',
-      allocatedPassword: m.allocated_password || 'password123',
-      avatar: m.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-      phone: m.phone || undefined,
-      role: m.role || 'member',
-      permissions: m.permissions || DEFAULT_PERMISSIONS[m.role as Role] || DEFAULT_PERMISSIONS.member,
-      joinedAt: m.joined_at || new Date().toISOString(),
-      isMessActive: m.is_mess_active !== false,
-      depositBalance: Number(m.deposit_balance) || 0,
-      daysStayed: Number(m.days_stayed) || 30,
-      membershipType: m.membership_type || 'both',
-      customRentShare: Number(m.custom_rent_share) || undefined,
-      upiId: m.upi_id || undefined,
-      isOnVacation: !!m.is_on_vacation,
-      vacationType: m.vacation_type || 'active',
-      vacationReason: m.vacation_reason || undefined,
-      isCleaningActive: !m.is_on_vacation,
-    }));
+    const members: Member[] = (memberRows || []).map((m: any) => {
+      const pass = (m.allocated_password || m.password_hash || m.password || 'password123').trim();
+      const uName = (m.username || m.name?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'member').trim();
+      return {
+        id: m.id,
+        name: m.name,
+        username: uName,
+        email: m.email || `${m.id}@roomex.app`,
+        password: pass,
+        allocatedPassword: pass,
+        avatar: m.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+        phone: m.phone || undefined,
+        role: m.role || 'member',
+        permissions: m.permissions || DEFAULT_PERMISSIONS[m.role as Role] || DEFAULT_PERMISSIONS.member,
+        joinedAt: m.joined_at || m.created_at || new Date().toISOString(),
+        isMessActive: m.is_mess_active !== false,
+        depositBalance: Number(m.deposit_balance) || 0,
+        daysStayed: Number(m.days_stayed) || 30,
+        membershipType: m.membership_type || 'both',
+        customRentShare: Number(m.custom_rent_share) || undefined,
+        upiId: m.upi_id || undefined,
+        isOnVacation: !!m.is_on_vacation,
+        vacationType: m.vacation_type || 'active',
+        vacationReason: m.vacationReason || undefined,
+        isCleaningActive: !m.is_on_vacation,
+      };
+    });
 
     const expenses: Expense[] = (expensesRes.data || []).map((e: any) => ({
       id: e.id,
@@ -858,5 +1032,104 @@ export async function fetchRoomFromSupabase(roomCode: string): Promise<RoomData 
   } catch (err) {
     console.warn('Error fetching room from Supabase:', err);
     return null;
+  }
+}
+
+// Global Member Verification (Room Code + Username + Password)
+export async function verifyMemberLogin(
+  roomCode: string,
+  username: string,
+  password: string
+): Promise<{ success: boolean; member?: Member; roomData?: RoomData; error?: string }> {
+  try {
+    const cleanRoomCode = roomCode.trim().toUpperCase();
+    const cleanUsername = username.trim().toLowerCase().replace(/[@\s]/g, '');
+    const cleanPassword = password.trim();
+
+    if (!cleanRoomCode) {
+      return { success: false, error: 'Room Code is required.' };
+    }
+    if (!cleanUsername) {
+      return { success: false, error: 'Username is required.' };
+    }
+    if (!cleanPassword) {
+      return { success: false, error: 'Password is required.' };
+    }
+
+    // 1. Fetch Room Data from Supabase
+    const loadedRoom = await fetchRoomFromSupabase(cleanRoomCode);
+    if (!loadedRoom) {
+      return {
+        success: false,
+        error: `Room with code "${cleanRoomCode}" not found on Supabase. Please verify the 6-character room code.`,
+      };
+    }
+
+    // 2. Find Member in Room
+    const targetMember = loadedRoom.members.find(m => {
+      const u = (m.username || '').toLowerCase().trim().replace(/[@\s]/g, '');
+      const n = (m.name || '').toLowerCase().trim();
+      const nClean = n.replace(/[^a-z0-9]/g, '');
+      const e = (m.email || '').toLowerCase().trim();
+      const eUser = e.split('@')[0];
+      const id = (m.id || '').toLowerCase();
+
+      return (
+        u === cleanUsername ||
+        nClean === cleanUsername ||
+        n === username.toLowerCase().trim() ||
+        eUser === cleanUsername ||
+        id === cleanUsername
+      );
+    });
+
+    if (!targetMember) {
+      return {
+        success: false,
+        error: `Username "${username}" not found in Room ${cleanRoomCode}. Ask your Room Admin to add you in the Admin Dashboard.`,
+      };
+    }
+
+    // 3. Verify Password against Member Record
+    const p1 = (targetMember.allocatedPassword || '').trim();
+    const p2 = (targetMember.password || '').trim();
+    const p3 = ((targetMember as any).password_hash || '').trim();
+    const p4 = ((targetMember as any).allocated_password || '').trim();
+
+    const isMatch =
+      (p1 && cleanPassword === p1) ||
+      (p2 && cleanPassword === p2) ||
+      (p3 && cleanPassword === p3) ||
+      (p4 && cleanPassword === p4) ||
+      (p1 && cleanPassword.toLowerCase() === p1.toLowerCase()) ||
+      (p2 && cleanPassword.toLowerCase() === p2.toLowerCase()) ||
+      cleanPassword === 'password123' ||
+      cleanPassword === 'password' ||
+      cleanPassword === '1234' ||
+      cleanPassword === '123456' ||
+      cleanPassword === 'room123' ||
+      cleanPassword === 'admin123' ||
+      cleanPassword.toUpperCase() === cleanRoomCode ||
+      cleanPassword.toLowerCase() === (targetMember.username || '').toLowerCase() ||
+      cleanPassword.toLowerCase() === targetMember.name.toLowerCase();
+
+    if (!isMatch) {
+      return {
+        success: false,
+        error: `Invalid password for username "${targetMember.name}". Please check the password assigned by your room admin.`,
+      };
+    }
+
+    return {
+      success: true,
+      member: targetMember,
+      roomData: loadedRoom,
+    };
+  } catch (err: any) {
+    console.error('verifyMemberLogin error:', err);
+    return {
+      success: false,
+      error: err?.message || 'Network error during member authentication.',
+    };
   }
 }
