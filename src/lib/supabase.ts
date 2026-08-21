@@ -44,12 +44,14 @@ CREATE TABLE IF NOT EXISTS rooms (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 2. Standard Members Table (Supports Global Member Login without Email)
+-- 2. Standard Members Table (Supports Global Member Login via Room Code + Username + Password)
 CREATE TABLE IF NOT EXISTS members (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   room_id UUID REFERENCES rooms(id) ON DELETE CASCADE,
   username TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
+  password TEXT NOT NULL,
+  password_hash TEXT,
+  allocated_password TEXT,
   name TEXT NOT NULL,
   role TEXT DEFAULT 'member', -- 'super_admin', 'admin', 'co_admin', 'member'
   email TEXT,
@@ -57,6 +59,9 @@ CREATE TABLE IF NOT EXISTS members (
   avatar TEXT DEFAULT 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
   permissions JSONB DEFAULT '{"canAddExpense": true, "canEditAnyExpense": false, "canDeleteExpense": false, "canManageMeals": true, "canSettleDebts": true, "canInviteMembers": false, "canGrantAdmin": false, "canEditRoomSettings": false}',
   is_mess_active BOOLEAN DEFAULT true,
+  enable_mess BOOLEAN DEFAULT true,
+  enable_rent BOOLEAN DEFAULT true,
+  enable_other BOOLEAN DEFAULT true,
   deposit_balance NUMERIC DEFAULT 0,
   days_stayed NUMERIC DEFAULT 30,
   membership_type TEXT DEFAULT 'both',
@@ -98,6 +103,9 @@ CREATE TABLE IF NOT EXISTS roomex_members (
   role TEXT DEFAULT 'member',
   permissions JSONB,
   is_mess_active BOOLEAN DEFAULT true,
+  enable_mess BOOLEAN DEFAULT true,
+  enable_rent BOOLEAN DEFAULT true,
+  enable_other BOOLEAN DEFAULT true,
   deposit_balance NUMERIC DEFAULT 0,
   days_stayed NUMERIC DEFAULT 30,
   membership_type TEXT DEFAULT 'both',

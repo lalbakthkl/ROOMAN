@@ -99,6 +99,8 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   // Scanner modal state
   const [isScannerOpen, setIsScannerOpen] = useState(false);
 
+  const currency = settings.currencySymbol || '₹';
+
   useEffect(() => {
     if (editingExpense) {
       setTitle(editingExpense.title);
@@ -107,13 +109,13 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
       setPaidBy(editingExpense.paidBy);
       setDate(editingExpense.date.split('T')[0]);
       setSplitType(editingExpense.splitType);
-      setIsMessExpense(editingExpense.isMessExpense ?? false);
+      setIsMessExpense(editingExpense.isMessExpense ?? (editingExpense.category === 'mess_food' || editingExpense.category === 'groceries' || editingExpense.category === 'gas_cylinder'));
       setNotes(editingExpense.notes || '');
       setReceiptUrl(editingExpense.receiptUrl);
       setAutoScanned(editingExpense.autoScanned ?? false);
 
       const activeSplitMembers = editingExpense.splits.map(s => s.memberId);
-      setSelectedMembers(activeSplitMembers);
+      setSelectedMembers(activeSplitMembers.length > 0 ? activeSplitMembers : members.map(m => m.id));
       if (editingExpense.category === 'rent') {
         setRentSplitMode(activeSplitMembers.length === members.length ? 'all' : 'custom');
       }
@@ -147,9 +149,9 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
 
   if (!isOpen) return null;
 
-  const numAmount = parseFloat(amount) || 0;
+  const numAmount = Math.round((Number(amount) || 0) * 100) / 100;
 
-  // Calculate splits based on current splitType
+  // Calculate splits based on current splitType with strict numeric validation
   const computeSplits = (): SplitShare[] => {
     if (splitType === 'equal') {
       const activeTargets = (category === 'rent' && rentSplitMode === 'all')
@@ -166,25 +168,25 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
           : equalShare;
         return {
           memberId: mId,
-          amount: amt,
+          amount: Math.max(0, amt),
         };
       });
     }
 
     if (splitType === 'exact') {
       return members
-        .filter(m => (parseFloat(exactAmounts[m.id]) || 0) > 0)
+        .filter(m => (Number(exactAmounts[m.id]) || 0) > 0)
         .map(m => ({
           memberId: m.id,
-          amount: parseFloat(exactAmounts[m.id]) || 0,
+          amount: Math.round((Number(exactAmounts[m.id]) || 0) * 100) / 100,
         }));
     }
 
     if (splitType === 'percentage') {
       return members
-        .filter(m => (parseFloat(percentages[m.id]) || 0) > 0)
+        .filter(m => (Number(percentages[m.id]) || 0) > 0)
         .map(m => {
-          const pct = parseFloat(percentages[m.id]) || 0;
+          const pct = Math.max(0, Number(percentages[m.id]) || 0);
           return {
             memberId: m.id,
             amount: Math.round(((numAmount * pct) / 100) * 100) / 100,
@@ -203,7 +205,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
       });
 
       if (totalMeals === 0) {
-        const count = members.length;
+        const count = members.length > 0 ? members.length : 1;
         const equalShare = Math.round((numAmount / count) * 100) / 100;
         return members.map(m => ({
           memberId: m.id,
@@ -227,7 +229,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   };
 
   const calculatedSplits = computeSplits();
-  const splitsSum = calculatedSplits.reduce((acc, s) => acc + s.amount, 0);
+  const splitsSum = Math.round(calculatedSplits.reduce((acc, s) => acc + (Number(s.amount) || 0), 0) * 100) / 100;
   const isSplitValid = Math.abs(splitsSum - numAmount) < 0.05 && numAmount > 0 && calculatedSplits.length > 0;
 
   const handleCategorySelect = (catId: ExpenseCategory) => {
@@ -239,7 +241,6 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
       }
     } else if (catId === 'mess_food' || catId === 'groceries' || catId === 'gas_cylinder') {
       setIsMessExpense(true);
-      // default select mess active members
       const messMembers = members.filter(m => m.membershipType !== 'rent_only').map(m => m.id);
       setSelectedMembers(messMembers.length > 0 ? messMembers : members.map(m => m.id));
     } else {
@@ -266,7 +267,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
     isMessExpense: boolean;
   }) => {
     setTitle(scannedData.title);
-    setAmount(scannedData.amount.toString());
+    setAmount(Number(scannedData.amount).toFixed(2));
     setCategory(scannedData.category);
     setDate(scannedData.date);
     setReceiptUrl(scannedData.receiptUrl);
@@ -277,16 +278,17 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || numAmount <= 0) {
-      alert('Please enter a valid title and expense amount');
+      alert('Please enter a valid title and numerical amount.');
       return;
     }
 
     if (!isSplitValid) {
-      alert(`The split total (${settings.currencySymbol}${splitsSum.toFixed(2)}) must match the expense amount (${settings.currencySymbol}${numAmount.toFixed(2)}).`);
+      alert(`The split total (${currency}${splitsSum.toFixed(2)}) must match the bill amount (${currency}${numAmount.toFixed(2)}).`);
       return;
     }
 
-    onAddExpense({
+    const expensePayload: Expense = {
+      id: editingExpense ? editingExpense.id : `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       roomId: settings.id,
       title: title.trim(),
       amount: numAmount,
@@ -299,9 +301,11 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
       receiptUrl,
       autoScanned,
       createdBy: activeMember.id,
+      createdAt: editingExpense ? editingExpense.createdAt : new Date().toISOString(),
       isMessExpense: isMessExpense || category === 'mess_food' || category === 'groceries' || category === 'gas_cylinder',
-    });
+    };
 
+    onAddExpense(expensePayload as any);
     onClose();
   };
 
@@ -313,22 +317,22 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
-          <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between bg-slate-950/60">
+          <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between bg-slate-950/70">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-xl bg-indigo-600/20 border border-indigo-500/40 text-indigo-400">
                 <Receipt className="w-5 h-5" />
               </div>
               <div>
                 <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
-                  {editingExpense ? 'Edit Purchase / Expense' : 'Add Room Purchase'}
+                  {editingExpense ? 'Edit Bill / Expense' : 'Add Bill / Room Purchase'}
                   {autoScanned && (
                     <span className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                       Auto-Scanned
                     </span>
                   )}
                 </h2>
-                <p className="text-xs text-slate-400 font-mono">
-                  Room spend, mess food, rent & shared utilities
+                <p className="text-xs text-slate-400">
+                  Shared mess food, flat rent & utility expenses
                 </p>
               </div>
             </div>
@@ -338,7 +342,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
               <button
                 type="button"
                 onClick={() => setIsScannerOpen(true)}
-                className="px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95"
+                className="px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
                 <span className="hidden sm:inline">Auto-Scan Bill</span>
@@ -347,7 +351,8 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
 
               <button 
                 onClick={onClose}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                aria-label="Close modal"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -355,7 +360,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
           </div>
 
           {/* Form Content */}
-          <form onSubmit={handleSubmit} className="p-5 overflow-y-auto flex-1 space-y-4">
+          <form onSubmit={handleSubmit} className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-4">
             
             {/* AI Auto-Scan Banner Shortcut */}
             {!receiptUrl && (
@@ -391,7 +396,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                     <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1">
                       <Check className="w-3.5 h-3.5" /> Receipt Attached
                     </span>
-                    <span className="text-[11px] text-slate-400 font-mono">Will be saved with this purchase</span>
+                    <span className="text-[11px] text-slate-400 font-mono">Saved with this room purchase</span>
                   </div>
                 </div>
 
@@ -399,7 +404,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsScannerOpen(true)}
-                    className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium"
+                    className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer"
                   >
                     Rescan
                   </button>
@@ -409,7 +414,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                       setReceiptUrl(undefined);
                       setAutoScanned(false);
                     }}
-                    className="text-[11px] text-rose-400 hover:text-rose-300 font-medium"
+                    className="text-[11px] text-rose-400 hover:text-rose-300 font-medium cursor-pointer"
                   >
                     Remove
                   </button>
@@ -417,9 +422,9 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
               </div>
             )}
 
-            {/* Quick Fill Ideas */}
+            {/* Quick Fill Suggestions */}
             <div>
-              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold block mb-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block mb-1.5">
                 Quick Fill Ideas:
               </span>
               <div className="flex flex-wrap gap-1.5">
@@ -428,7 +433,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                     key={sug}
                     type="button"
                     onClick={() => setTitle(sug)}
-                    className="text-[11px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-indigo-600/20 text-slate-300 hover:text-indigo-300 border border-white/10 transition-colors"
+                    className="text-[11px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-indigo-600/20 text-slate-300 hover:text-indigo-300 border border-white/10 transition-colors cursor-pointer"
                   >
                     {sug}
                   </button>
@@ -439,22 +444,22 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
             {/* Title & Amount Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="sm:col-span-2">
-                <label className="block text-xs font-medium text-slate-300 mb-1">Purchase / Bill Title *</label>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Bill / Expense Title *</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. Weekly Mess Vegetables"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none font-medium"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Amount ({settings.currencySymbol}) *</label>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Amount ({currency}) *</label>
                 <div className="relative">
-                  <span className="absolute left-3 top-2.5 text-xs font-mono text-slate-400">
-                    {settings.currencySymbol}
+                  <span className="absolute left-3 top-2.5 text-xs font-mono font-bold text-slate-400">
+                    {currency}
                   </span>
                   <input
                     type="number"
@@ -464,7 +469,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                     placeholder="0.00"
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
-                    className="w-full bg-slate-950 border border-white/10 rounded-xl pl-7 pr-3 py-2.5 text-xs text-white font-mono font-bold focus:border-indigo-500 focus:outline-none"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl pl-8 pr-3 py-2.5 text-xs text-white font-mono font-bold focus:border-indigo-500 focus:outline-none"
                   />
                 </div>
               </div>
@@ -472,7 +477,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
 
             {/* Category Selector Grid */}
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1.5">Category</label>
+              <label className="block text-xs font-bold text-slate-300 mb-1.5">Category *</label>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 {CATEGORIES.map((cat) => {
                   const Icon = cat.icon;
@@ -482,9 +487,9 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                       key={cat.id}
                       type="button"
                       onClick={() => handleCategorySelect(cat.id)}
-                      className={`p-2.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all text-center min-h-[64px] ${
+                      className={`p-2.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all text-center min-h-[64px] cursor-pointer ${
                         isSelected 
-                          ? `${cat.color} font-semibold ring-2 ring-indigo-500 shadow-md` 
+                          ? `${cat.color} font-bold ring-2 ring-indigo-500 shadow-md` 
                           : 'bg-white/[0.02] border-white/10 text-slate-400 hover:bg-white/5 hover:text-slate-200'
                       }`}
                     >
@@ -499,47 +504,45 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
             {/* Paid By & Date Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Who Paid for this? *</label>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Select Member (Who Paid) *</label>
                 <select
                   value={paidBy}
                   onChange={(e) => setPaidBy(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none cursor-pointer font-medium"
                 >
                   {members.map((m) => (
                     <option key={m.id} value={m.id}>
-                      {m.name} ({m.role.replace('_', ' ')})
+                      {m.name} {m.id === activeMember.id ? '— (YOU)' : ''} ({m.role.replace('_', ' ')})
                     </option>
                   ))}
                 </select>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Date *</label>
+                <label className="block text-xs font-bold text-slate-300 mb-1">Date *</label>
                 <input
                   type="date"
                   required
                   value={date}
                   onChange={(e) => setDate(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono"
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white focus:border-indigo-500 focus:outline-none font-mono cursor-pointer"
                 />
               </div>
             </div>
 
             {/* Category Specific Splitting Controls */}
             {category === 'rent' ? (
-              /* Requirement 1: Room Rent equal to all with option for selection */
               <div className="p-4 rounded-xl bg-indigo-950/30 border border-indigo-500/30 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Home className="w-4 h-4 text-indigo-400" />
-                    <span className="text-xs font-bold text-white">Room Rent Splitting Option</span>
+                    <span className="text-xs font-bold text-white">Room Rent Splitting Mode</span>
                   </div>
-                  <span className="text-[10px] font-mono text-indigo-300 bg-indigo-500/20 px-2 py-0.5 rounded">
+                  <span className="text-[10px] font-mono text-indigo-300 bg-indigo-500/20 px-2 py-0.5 rounded font-bold">
                     Equal Split
                   </span>
                 </div>
 
-                {/* Option 1: Equal to All vs Option 2: Select Specific Members */}
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
@@ -547,37 +550,36 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                       setRentSplitMode('all');
                       setSelectedMembers(members.filter(m => m.membershipType !== 'mess_only').map(m => m.id));
                     }}
-                    className={`py-2 px-3 rounded-xl text-xs font-semibold border flex items-center justify-center gap-1.5 transition-all ${
+                    className={`py-2 px-3 rounded-xl text-xs font-semibold border flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                       rentSplitMode === 'all'
                         ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
                         : 'bg-slate-950 text-slate-300 border-white/10 hover:bg-white/5'
                     }`}
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Equal to All Roommates</span>
+                    <span>Equal to All Active</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setRentSplitMode('custom')}
-                    className={`py-2 px-3 rounded-xl text-xs font-semibold border flex items-center justify-center gap-1.5 transition-all ${
+                    className={`py-2 px-3 rounded-xl text-xs font-semibold border flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                       rentSplitMode === 'custom'
                         ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
                         : 'bg-slate-950 text-slate-300 border-white/10 hover:bg-white/5'
                     }`}
                   >
                     <Users className="w-3.5 h-3.5" />
-                    <span>Select Specific Roommates</span>
+                    <span>Select Roommates</span>
                   </button>
                 </div>
 
-                {/* Roommate Checklist if Custom Selection is Active */}
                 {rentSplitMode === 'custom' && (
                   <div className="space-y-2 pt-2 border-t border-white/10">
                     <span className="text-[11px] text-slate-300 block font-medium">
                       Select which roommates share this rent:
                     </span>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {members.map((m) => {
                         const isChecked = selectedMembers.includes(m.id);
                         return (
@@ -585,7 +587,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                             key={m.id}
                             type="button"
                             onClick={() => handleToggleMemberSelect(m.id)}
-                            className={`p-2 rounded-lg border text-left flex items-center justify-between text-xs transition-all ${
+                            className={`p-2 rounded-lg border text-left flex items-center justify-between text-xs transition-all cursor-pointer ${
                               isChecked
                                 ? 'bg-indigo-500/20 border-indigo-500 text-white font-medium'
                                 : 'bg-slate-950/60 border-white/10 text-slate-400'
@@ -601,17 +603,16 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                 )}
               </div>
             ) : (
-              /* General Split Selector */
               <div className="space-y-3 p-4 rounded-xl bg-white/[0.02] border border-white/10">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                     <Calculator className="w-4 h-4 text-indigo-400" /> Split Method
                   </label>
                   <div className="flex gap-1 bg-slate-950 p-1 rounded-lg border border-white/10">
                     <button
                       type="button"
                       onClick={() => setSplitType('equal')}
-                      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                      className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
                         splitType === 'equal' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
                       }`}
                     >
@@ -620,7 +621,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setSplitType('exact')}
-                      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                      className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
                         splitType === 'exact' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
                       }`}
                     >
@@ -629,7 +630,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setSplitType('percentage')}
-                      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                      className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
                         splitType === 'percentage' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
                       }`}
                     >
@@ -639,7 +640,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                       <button
                         type="button"
                         onClick={() => setSplitType('meal_share')}
-                        className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                        className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
                           splitType === 'meal_share' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
                         }`}
                       >
@@ -649,21 +650,20 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                   </div>
                 </div>
 
-                {/* Equal Split Roommates Selector */}
                 {splitType === 'equal' && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs text-slate-400">
-                      <span>Select included roommates:</span>
+                      <span>Included roommates ({selectedMembers.length}):</span>
                       <button
                         type="button"
                         onClick={() => setSelectedMembers(members.map(m => m.id))}
-                        className="text-indigo-400 hover:underline font-mono text-[11px]"
+                        className="text-indigo-400 hover:underline font-mono text-[11px] cursor-pointer"
                       >
                         Select All
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {members.map((m) => {
                         const isSelected = selectedMembers.includes(m.id);
                         return (
@@ -671,7 +671,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                             key={m.id}
                             type="button"
                             onClick={() => handleToggleMemberSelect(m.id)}
-                            className={`p-2 rounded-xl border text-left flex items-center justify-between text-xs transition-all ${
+                            className={`p-2 rounded-xl border text-left flex items-center justify-between text-xs transition-all cursor-pointer ${
                               isSelected
                                 ? 'bg-indigo-600/20 border-indigo-500 text-white font-semibold'
                                 : 'bg-slate-950 border-white/10 text-slate-400 hover:text-slate-200'
@@ -686,7 +686,6 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                   </div>
                 )}
 
-                {/* Exact Amounts Inputs */}
                 {splitType === 'exact' && (
                   <div className="space-y-2">
                     <span className="text-xs text-slate-400 block font-medium">
@@ -698,7 +697,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                           <span className="text-xs text-slate-200 font-medium truncate">{m.name}</span>
                           <div className="relative w-28 shrink-0">
                             <span className="absolute left-2.5 top-1.5 text-xs text-slate-400 font-mono">
-                              {settings.currencySymbol}
+                              {currency}
                             </span>
                             <input
                               type="number"
@@ -706,7 +705,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                               placeholder="0.00"
                               value={exactAmounts[m.id] || ''}
                               onChange={(e) => setExactAmounts({ ...exactAmounts, [m.id]: e.target.value })}
-                              className="w-full bg-slate-900 border border-white/10 rounded-lg pl-6 pr-2 py-1 text-xs text-right text-white font-mono focus:border-indigo-500 focus:outline-none"
+                              className="w-full bg-slate-900 border border-white/10 rounded-lg pl-6 pr-2 py-1 text-xs text-right text-white font-mono focus:border-indigo-500 focus:outline-none font-bold"
                             />
                           </div>
                         </div>
@@ -715,7 +714,6 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                   </div>
                 )}
 
-                {/* Percentage Inputs */}
                 {splitType === 'percentage' && (
                   <div className="space-y-2">
                     <span className="text-xs text-slate-400 block font-medium">
@@ -732,7 +730,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
                               placeholder="0"
                               value={percentages[m.id] || ''}
                               onChange={(e) => setPercentages({ ...percentages, [m.id]: e.target.value })}
-                              className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-xs text-right text-white font-mono focus:border-indigo-500 focus:outline-none pr-6"
+                              className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-xs text-right text-white font-mono focus:border-indigo-500 focus:outline-none pr-6 font-bold"
                             />
                             <span className="absolute right-2 top-1 text-xs text-slate-400">%</span>
                           </div>
@@ -744,10 +742,10 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
 
                 {/* Split Calculation Verification Bar */}
                 <div className="pt-2 flex items-center justify-between border-t border-white/10 text-xs">
-                  <span className="text-slate-400">Calculated Total:</span>
+                  <span className="text-slate-400 font-medium">Calculated Split Total:</span>
                   <div className="flex items-center gap-1.5 font-mono">
                     <span className={isSplitValid ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
-                      {settings.currencySymbol}{splitsSum.toFixed(2)} / {settings.currencySymbol}{numAmount.toFixed(2)}
+                      {currency}{splitsSum.toFixed(2)} / {currency}{numAmount.toFixed(2)}
                     </span>
                     {isSplitValid ? (
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -762,24 +760,24 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
 
             {/* Optional Notes */}
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">Optional Notes</label>
+              <label className="block text-xs font-bold text-slate-300 mb-1">Optional Notes / Remarks</label>
               <input
                 type="text"
-                placeholder="e.g. Paid via UPI, bill attached"
+                placeholder="e.g. Paid via UPI, vegetables from market"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
               />
             </div>
 
           </form>
 
           {/* Footer Actions */}
-          <div className="px-5 py-3.5 border-t border-white/10 flex items-center justify-between bg-slate-950/60">
+          <div className="px-5 py-3.5 border-t border-white/10 flex items-center justify-between bg-slate-950/70">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-medium transition-colors"
+              className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-medium transition-colors cursor-pointer"
             >
               Cancel
             </button>
@@ -788,10 +786,10 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
               type="button"
               onClick={handleSubmit}
               disabled={!title.trim() || numAmount <= 0 || !isSplitValid}
-              className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/30 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-md shadow-indigo-600/30 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 cursor-pointer"
             >
               <Check className="w-3.5 h-3.5" />
-              <span>{editingExpense ? 'Save Changes' : 'Record Purchase'}</span>
+              <span>{editingExpense ? 'Save Changes' : `Save Bill (${currency}${numAmount.toFixed(2)})`}</span>
             </button>
           </div>
 

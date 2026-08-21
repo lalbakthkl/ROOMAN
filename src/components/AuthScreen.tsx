@@ -18,7 +18,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { Member, Role, AuthUser, MembershipType, RoomSettings, RoomData } from '../types';
-import { fetchRoomFromSupabase, verifyMemberLogin } from '../lib/storage';
+import { fetchRoomFromSupabase, verifyMemberLogin, getOrCreateAdminRoom } from '../lib/storage';
 import { supabase } from '../supabaseClient.js';
 
 interface AuthScreenProps {
@@ -132,11 +132,15 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     };
   }, [roomCode, authMode, currentRoomCode, memberList, settings]);
 
-  // Redirect to Home Helper ("/")
+  // Redirect to Designated Dashboard
   const redirectToHome = (user: AuthUser, loadedRoomData?: RoomData) => {
     try {
       if (typeof window !== 'undefined' && window.history) {
-        window.history.pushState({}, '', '/');
+        if (user.role === 'member') {
+          window.history.pushState({}, '', '/member/dashboard');
+        } else {
+          window.history.pushState({}, '', '/admin/dashboard');
+        }
       }
     } catch {}
     onLogin(user, loadedRoomData);
@@ -185,23 +189,27 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         user?.user_metadata?.full_name || 
         cleanEmail.split('@')[0].replace(/[\._-]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 
-      // Attempt to load associated room from cloud
-      let targetRoomData: RoomData | null = null;
-      if (currentRoomCode) {
-        targetRoomData = await fetchRoomFromSupabase(currentRoomCode);
-      }
+      // Multi-tenant isolated room loading
+      const targetRoomData = await getOrCreateAdminRoom({
+        id: user.id,
+        name: userDisplayName,
+        email: cleanEmail,
+        avatar: user.user_metadata?.avatar_url,
+      });
+
+      const assignedRoomCode = targetRoomData?.settings?.roomCode || currentRoomCode || 'RM1001';
 
       setSuccessMsg(`Welcome back, ${userDisplayName}! Redirecting...`);
 
       setTimeout(() => {
         redirectToHome({
-          id: user?.id || `user_${Date.now()}`,
-          memberId: user?.id || `user_${Date.now()}`,
-          email: user?.email || cleanEmail,
+          id: user.id,
+          memberId: user.id,
+          email: user.email || cleanEmail,
           name: userDisplayName,
-          avatar: user?.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          avatar: user.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
           role: 'super_admin',
-          roomCode: currentRoomCode || 'ROOM101',
+          roomCode: assignedRoomCode,
         }, targetRoomData || undefined);
         setIsLoading(false);
       }, 300);
@@ -266,32 +274,28 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
       // Only redirect when a real session exists
       const user = data.user || data.session.user;
-      const newRoomCode = `ROOM${Math.floor(100 + Math.random() * 900)}`;
+      
+      // Auto-provision brand new isolated room for this Admin
+      const newAdminRoom = await getOrCreateAdminRoom({
+        id: user.id,
+        name: cleanName,
+        email: cleanEmail,
+      });
 
-      if (onRegisterNewRoom) {
-        onRegisterNewRoom({
-          adminName: cleanName,
-          email: cleanEmail,
-          password: cleanPass,
-          roomName: 'My Flat',
-          roomCode: newRoomCode,
-          currency: 'INR',
-          currencySymbol: '₹',
-        });
-      }
+      const assignedRoomCode = newAdminRoom.settings.roomCode || `RM${Math.floor(1000 + Math.random() * 9000)}`;
 
       setSuccessMsg('Account created successfully! Redirecting to home...');
 
       setTimeout(() => {
         redirectToHome({
-          id: user?.id || `user_${Date.now()}`,
-          memberId: user?.id || `user_${Date.now()}`,
-          email: user?.email || cleanEmail,
+          id: user.id,
+          memberId: user.id,
+          email: user.email || cleanEmail,
           name: cleanName,
           avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
           role: 'super_admin',
-          roomCode: newRoomCode,
-        });
+          roomCode: assignedRoomCode,
+        }, newAdminRoom);
         setIsLoading(false);
       }, 350);
 

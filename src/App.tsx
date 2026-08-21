@@ -57,7 +57,13 @@ import {
   INITIAL_ROOM_DATA, 
   DEFAULT_PERMISSIONS, 
   calculateMessMetrics, 
-  calculateNetBalances 
+  calculateNetBalances,
+  getMemberSession,
+  clearMemberSession,
+  generateRoomCode,
+  fetchRoomFromSupabase,
+  deleteMemberFromSupabase,
+  updateMemberExpenseTogglesInSupabase
 } from './lib/storage';
 import { SupabaseSyncStatus, supabase } from './lib/supabase';
 import { 
@@ -98,9 +104,21 @@ export default function App() {
     getActiveMemberId(loadRoomData().members)
   );
 
-  // Auth User State - strictly null if not logged in (no default auto-login)
+  // Auth User State - strictly null if not logged in
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
     try {
+      const memberSess = getMemberSession();
+      if (memberSess) {
+        return {
+          id: memberSess.memberId,
+          memberId: memberSess.memberId,
+          email: memberSess.email || '',
+          name: memberSess.name,
+          avatar: memberSess.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          role: memberSess.role || 'member',
+          roomCode: memberSess.roomCode,
+        };
+      }
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
       if (saved) return JSON.parse(saved);
     } catch {}
@@ -108,7 +126,18 @@ export default function App() {
   });
 
   // Active View Tab (Default to clean mobile-optimized Overview)
-  const [activeTab, setActiveTab] = useState<'overview' | 'expenses' | 'mess' | 'cleaning' | 'balances' | 'summary' | 'super_admin'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'expenses' | 'mess' | 'cleaning' | 'balances' | 'summary' | 'super_admin'>(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      if (path === '/expenses') return 'expenses';
+      if (path === '/mess') return 'mess';
+      if (path === '/cleaning') return 'cleaning';
+      if (path === '/balances') return 'balances';
+      if (path === '/summary') return 'summary';
+      if (path.startsWith('/admin')) return 'super_admin';
+    }
+    return 'overview';
+  });
 
   // Modals state
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
@@ -146,6 +175,31 @@ export default function App() {
     joinedAt: new Date().toISOString(),
   };
 
+  // Safe Tab Change with Route Protection
+  const handleTabChange = (newTab: 'overview' | 'expenses' | 'mess' | 'cleaning' | 'balances' | 'summary' | 'super_admin') => {
+    // Member protection: Members can NEVER access super_admin
+    if (newTab === 'super_admin' && activeMember.role !== 'super_admin' && activeMember.role !== 'admin') {
+      setActiveTab('overview');
+      if (typeof window !== 'undefined' && window.history) {
+        window.history.pushState({}, '', '/member/dashboard');
+      }
+      return;
+    }
+    setActiveTab(newTab);
+    if (typeof window !== 'undefined' && window.history) {
+      const pathMap: Record<string, string> = {
+        overview: '/member/dashboard',
+        expenses: '/expenses',
+        mess: '/mess',
+        cleaning: '/cleaning',
+        balances: '/balances',
+        summary: '/summary',
+        super_admin: '/admin/dashboard',
+      };
+      window.history.pushState({}, '', pathMap[newTab] || '/');
+    }
+  };
+
   // Auth Login Handler
   const handleLogin = (user: AuthUser, loadedRoomData?: RoomData) => {
     let targetRoom = loadedRoomData || roomData;
@@ -173,7 +227,7 @@ export default function App() {
         ...targetRoom,
         settings: {
           ...targetRoom.settings,
-          roomCode: user.roomCode || targetRoom.settings.roomCode || `ROOM${Math.floor(100 + Math.random() * 900)}`,
+          roomCode: user.roomCode || targetRoom.settings.roomCode || generateRoomCode(),
         },
         members: [...targetRoom.members, newM],
       };
@@ -187,6 +241,18 @@ export default function App() {
     try {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
     } catch {}
+
+    // Strict Role-Based View Routing
+    if (user.role === 'member') {
+      setActiveTab('overview');
+      if (typeof window !== 'undefined' && window.history) {
+        window.history.replaceState({}, '', '/member/dashboard');
+      }
+    } else if (user.role === 'super_admin' || user.role === 'admin') {
+      if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
+        setActiveTab('super_admin');
+      }
+    }
   };
 
   const handleSignOut = async () => {
@@ -196,6 +262,7 @@ export default function App() {
       console.warn('Supabase sign out error:', err);
     }
     try {
+      clearMemberSession();
       localStorage.removeItem(AUTH_STORAGE_KEY);
     } catch {}
     setAuthUser(null);
@@ -204,38 +271,58 @@ export default function App() {
     }
   };
 
-  // Protect private pages with supabase.auth.getSession() — if no session, redirect to /login
+  // Protect private pages & role routes
   useEffect(() => {
     let isMounted = true;
 
     const verifySessionAndProtect = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        if (!session) {
-          // Check if there is an active local member or admin session stored in localStorage
-          const localUserRaw = typeof window !== 'undefined' ? localStorage.getItem(AUTH_STORAGE_KEY) : null;
-          const hasLocalSession = !!localUserRaw;
+        const { data: { session } } = await supabase.auth.getSession();
+        const memberSession = getMemberSession();
+        const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
 
-          if (!hasLocalSession && !authUser) {
-            // If neither Supabase session nor local member session exists, protect private route
-            const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
-            if (currentPath !== '/login' && currentPath !== '/signup' && currentPath !== '/member-login') {
-              if (typeof window !== 'undefined' && window.history) {
-                window.history.replaceState({}, '', '/login');
-              }
+        // 1. Check Member Session (Strict role isolation)
+        if (memberSession) {
+          // If member attempts to visit /admin, redirect back to /member/dashboard
+          if (currentPath.startsWith('/admin')) {
+            if (typeof window !== 'undefined' && window.history) {
+              window.history.replaceState({}, '', '/member/dashboard');
             }
+            setActiveTab('overview');
           }
-        } else {
-          // A real Supabase session exists!
-          const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+          if (!authUser && isMounted) {
+            let freshRoom: RoomData | null = null;
+            if (memberSession.roomCode || memberSession.roomId) {
+              try {
+                freshRoom = await fetchRoomFromSupabase(memberSession.roomCode || memberSession.roomId);
+              } catch (e) {}
+            }
+
+            const memberAuthUser: AuthUser = {
+              id: memberSession.memberId,
+              memberId: memberSession.memberId,
+              email: memberSession.email || '',
+              name: memberSession.name,
+              avatar: memberSession.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+              role: memberSession.role || 'member',
+              roomCode: memberSession.roomCode,
+            };
+            handleLogin(memberAuthUser, freshRoom || undefined);
+          }
+          return;
+        }
+
+        // 2. Check Supabase Admin Session
+        if (session) {
           if (currentPath === '/login' || currentPath === '/signup' || currentPath === '/member-login') {
             if (typeof window !== 'undefined' && window.history) {
               window.history.replaceState({}, '', '/');
             }
           }
+          if (currentPath.startsWith('/admin') && activeTab !== 'super_admin') {
+            setActiveTab('super_admin');
+          }
 
-          // Hydrate authUser from active session if needed
           if (!authUser && isMounted) {
             const user = session.user;
             const displayName = 
@@ -251,19 +338,30 @@ export default function App() {
               name: displayName,
               avatar: user.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
               role: 'super_admin',
-              roomCode: roomData.settings.roomCode || 'ROOM101',
+              roomCode: roomData.settings.roomCode || generateRoomCode(),
             };
             handleLogin(authU);
           }
+          return;
+        }
+
+        // 3. Neither Supabase session nor memberSession exists
+        const localUserRaw = typeof window !== 'undefined' ? localStorage.getItem(AUTH_STORAGE_KEY) : null;
+        if (!localUserRaw && !authUser) {
+          if (currentPath !== '/login' && currentPath !== '/signup' && currentPath !== '/member-login') {
+            if (typeof window !== 'undefined' && window.history) {
+              window.history.replaceState({}, '', '/login');
+            }
+          }
         }
       } catch (err) {
-        console.warn('Supabase getSession verification error:', err);
+        console.warn('Session verification error:', err);
       }
     };
 
     verifySessionAndProtect();
 
-    // Listen for auth state changes (e.g. email confirmation token confirmed, sign in, sign out)
+    // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!isMounted) return;
 
@@ -290,11 +388,12 @@ export default function App() {
             name: displayName,
             avatar: user.user_metadata?.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
             role: 'super_admin',
-            roomCode: roomData.settings.roomCode || 'ROOM101',
+            roomCode: roomData.settings.roomCode || generateRoomCode(),
           };
           handleLogin(authU);
         }
       } else if (event === 'SIGNED_OUT') {
+        clearMemberSession();
         setAuthUser(null);
         try {
           localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -305,9 +404,33 @@ export default function App() {
       }
     });
 
+    // Handle browser back/forward buttons
+    const handlePopState = () => {
+      const path = window.location.pathname;
+      if (path === '/expenses') setActiveTab('expenses');
+      else if (path === '/mess') setActiveTab('mess');
+      else if (path === '/cleaning') setActiveTab('cleaning');
+      else if (path === '/balances') setActiveTab('balances');
+      else if (path === '/summary') setActiveTab('summary');
+      else if (path.startsWith('/admin')) {
+        const memSess = getMemberSession();
+        if (memSess && memSess.role === 'member') {
+          window.history.replaceState({}, '', '/member/dashboard');
+          setActiveTab('overview');
+        } else {
+          setActiveTab('super_admin');
+        }
+      } else {
+        setActiveTab('overview');
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
     return () => {
       isMounted = false;
       subscription?.unsubscribe();
+      window.removeEventListener('popstate', handlePopState);
     };
   }, []);
 
@@ -401,16 +524,31 @@ export default function App() {
 
   // Expense Handlers
   const handleSaveExpense = (expense: Expense) => {
-    const isEdit = roomData.expenses.some(e => e.id === expense.id);
+    const sanitizedAmount = Math.round((Number(expense.amount) || 0) * 100) / 100;
+    const sanitizedSplits = (expense.splits || []).map(s => ({
+      ...s,
+      amount: Math.round((Number(s.amount) || 0) * 100) / 100,
+    }));
+
+    const cleanExpense: Expense = {
+      ...expense,
+      id: expense.id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      roomId: expense.roomId || roomData.settings.id,
+      amount: sanitizedAmount,
+      splits: sanitizedSplits,
+      createdAt: expense.createdAt || new Date().toISOString(),
+    };
+
+    const isEdit = roomData.expenses.some(e => e.id === cleanExpense.id);
     let updatedExpenses: Expense[];
     let logAction = '';
 
     if (isEdit) {
-      updatedExpenses = roomData.expenses.map(e => e.id === expense.id ? expense : e);
-      logAction = `Edited expense "${expense.title}" (${roomData.settings.currencySymbol}${expense.amount.toFixed(2)})`;
+      updatedExpenses = roomData.expenses.map(e => e.id === cleanExpense.id ? cleanExpense : e);
+      logAction = `Edited expense "${cleanExpense.title}" (${roomData.settings.currencySymbol}${cleanExpense.amount.toFixed(2)})`;
     } else {
-      updatedExpenses = [expense, ...roomData.expenses];
-      logAction = `Added expense "${expense.title}" (${roomData.settings.currencySymbol}${expense.amount.toFixed(2)})`;
+      updatedExpenses = [cleanExpense, ...roomData.expenses];
+      logAction = `Added expense "${cleanExpense.title}" (${roomData.settings.currencySymbol}${cleanExpense.amount.toFixed(2)})`;
     }
 
     const newAuditLog: AuditLog = {
@@ -673,7 +811,20 @@ export default function App() {
       'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
     ];
     const newId = `usr_${Date.now()}`;
-    const cleanUsername = (username || name.toLowerCase().replace(/[^a-z0-9]/g, '') || `user${Math.floor(100 + Math.random() * 900)}`).trim();
+    let cleanUsername = (username || name.toLowerCase().replace(/[^a-z0-9]/g, '') || `user${Math.floor(100 + Math.random() * 900)}`).trim();
+    
+    // Prevent duplicate username entries within the same room_id
+    const existingUsernames = new Set(
+      roomData.members.map(m => (m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, '')).toLowerCase())
+    );
+    if (existingUsernames.has(cleanUsername.toLowerCase())) {
+      let counter = 2;
+      while (existingUsernames.has(`${cleanUsername.toLowerCase()}${counter}`)) {
+        counter++;
+      }
+      cleanUsername = `${cleanUsername}${counter}`;
+    }
+
     const cleanPassword = (password || 'password123').trim();
 
     const newMember: Member = {
@@ -861,7 +1012,7 @@ export default function App() {
   };
 
   // Remove Roommate Handler (Admin Only)
-  const handleRemoveMember = (memberId: string) => {
+  const handleRemoveMember = async (memberId: string) => {
     const target = roomData.members.find(m => m.id === memberId);
     if (!target) return;
 
@@ -893,17 +1044,103 @@ export default function App() {
       setActiveMemberId(fallbackAdmin.id);
     }
 
-    setRoomData(prev => ({
-      ...prev,
+    // Clean up local session if the removed member was logged in
+    const currentSession = getMemberSession();
+    if (currentSession && currentSession.memberId === memberId) {
+      clearMemberSession();
+    }
+
+    // Remove member from meals, settlements, and clean up splits
+    const cleanedMeals = roomData.meals.filter(m => m.memberId !== memberId);
+    const cleanedSettlements = roomData.settlements.filter(s => s.fromMemberId !== memberId && s.toMemberId !== memberId);
+    const cleanedExpenses = roomData.expenses.map(exp => ({
+      ...exp,
+      splits: exp.splits.filter(s => s.memberId !== memberId),
+      paidBy: exp.paidBy === memberId ? (remainingMembers[0]?.id || exp.paidBy) : exp.paidBy,
+    }));
+
+    const updatedRoom: RoomData = {
+      ...roomData,
       members: remainingMembers,
+      expenses: cleanedExpenses,
+      meals: cleanedMeals,
+      settlements: cleanedSettlements,
       cleaningSchedule: {
-        ...(prev.cleaningSchedule || INITIAL_ROOM_DATA.cleaningSchedule),
+        ...(roomData.cleaningSchedule || INITIAL_ROOM_DATA.cleaningSchedule),
         rotaOrder: updatedRota.length > 0 ? updatedRota : remainingMembers.map(m => m.id),
         currentMemberId: newCurrent,
         nextMemberId: newNext,
       },
-      auditLogs: [newAuditLog, ...prev.auditLogs],
-    }));
+      auditLogs: [newAuditLog, ...roomData.auditLogs],
+    };
+
+    // Immediate UI update
+    setRoomData(updatedRoom);
+    saveRoomData(updatedRoom);
+
+    // Delete from Supabase members / roomex_members and sync full room
+    await deleteMemberFromSupabase(memberId, roomData.settings.id);
+    await syncRoomWithSupabase(updatedRoom);
+  };
+
+  // Update Individual Member Expense Toggles (Mess, Rent, Other Expenses)
+  const handleUpdateMemberExpenseToggles = (
+    memberId: string,
+    toggles: { enableMess?: boolean; enableRent?: boolean; enableOther?: boolean }
+  ) => {
+    setRoomData(prev => {
+      const target = prev.members.find(m => m.id === memberId);
+      if (!target) return prev;
+
+      const nextMess = toggles.enableMess !== undefined 
+        ? toggles.enableMess 
+        : (target.enableMess !== undefined ? target.enableMess : (target.isMessActive !== false && target.membershipType !== 'rent_only'));
+      const nextRent = toggles.enableRent !== undefined 
+        ? toggles.enableRent 
+        : (target.enableRent !== undefined ? target.enableRent : (target.membershipType !== 'mess_only'));
+      const nextOther = toggles.enableOther !== undefined 
+        ? toggles.enableOther 
+        : (target.enableOther !== undefined ? target.enableOther : true);
+
+      const updatedMembers = prev.members.map(m => {
+        if (m.id === memberId) {
+          return {
+            ...m,
+            enableMess: nextMess,
+            enableRent: nextRent,
+            enableOther: nextOther,
+            isMessActive: nextMess,
+          };
+        }
+        return m;
+      });
+
+      const detailsArr: string[] = [];
+      if (toggles.enableMess !== undefined) detailsArr.push(`Mess: ${toggles.enableMess ? 'ON' : 'OFF'}`);
+      if (toggles.enableRent !== undefined) detailsArr.push(`Rent: ${toggles.enableRent ? 'ON' : 'OFF'}`);
+      if (toggles.enableOther !== undefined) detailsArr.push(`Other: ${toggles.enableOther ? 'ON' : 'OFF'}`);
+
+      const newAuditLog: AuditLog = {
+        id: `log_${Date.now()}`,
+        roomId: prev.settings.id,
+        actorId: activeMember.id,
+        actorName: activeMember.name,
+        action: 'role_changed',
+        details: `Updated expense toggles for "${target.name}": ${detailsArr.join(', ')}`,
+        timestamp: new Date().toISOString(),
+      };
+
+      const updatedRoom: RoomData = {
+        ...prev,
+        members: updatedMembers,
+        auditLogs: [newAuditLog, ...prev.auditLogs],
+      };
+
+      syncRoomWithSupabase(updatedRoom);
+      updateMemberExpenseTogglesInSupabase(memberId, prev.settings.id, toggles);
+
+      return updatedRoom;
+    });
   };
 
   // Update Member Participation / Vacation / Long Leave Status (Super Admin & Admin)
@@ -1305,7 +1542,7 @@ export default function App() {
             
             {/* 0. Member Overview (Simple screen for members) */}
             <button
-              onClick={() => setActiveTab('overview')}
+              onClick={() => handleTabChange('overview')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
                 activeTab === 'overview'
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
@@ -1318,7 +1555,7 @@ export default function App() {
 
             {/* 1. Room Expenses */}
             <button
-              onClick={() => setActiveTab('expenses')}
+              onClick={() => handleTabChange('expenses')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
                 activeTab === 'expenses'
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
@@ -1334,7 +1571,7 @@ export default function App() {
 
             {/* 2. Mess Manager */}
             <button
-              onClick={() => setActiveTab('mess')}
+              onClick={() => handleTabChange('mess')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
                 activeTab === 'mess'
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
@@ -1350,7 +1587,7 @@ export default function App() {
 
             {/* 3. Cleaning Schedule */}
             <button
-              onClick={() => setActiveTab('cleaning')}
+              onClick={() => handleTabChange('cleaning')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
                 activeTab === 'cleaning'
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
@@ -1366,7 +1603,7 @@ export default function App() {
 
             {/* 4. Balances & Settle */}
             <button
-              onClick={() => setActiveTab('balances')}
+              onClick={() => handleTabChange('balances')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
                 activeTab === 'balances'
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
@@ -1379,7 +1616,7 @@ export default function App() {
 
             {/* 5. Summary & Colorful PDF Export */}
             <button
-              onClick={() => setActiveTab('summary')}
+              onClick={() => handleTabChange('summary')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
                 activeTab === 'summary'
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
@@ -1393,7 +1630,7 @@ export default function App() {
             {/* 6. Unified Admin & Super Admin Master Tab */}
             {(activeMember.role === 'super_admin' || activeMember.role === 'admin') && (
               <button
-                onClick={() => setActiveTab('super_admin')}
+                onClick={() => handleTabChange('super_admin')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
                   activeTab === 'super_admin'
                     ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 font-black shadow-lg shadow-amber-500/20'
@@ -1442,9 +1679,9 @@ export default function App() {
               setEditingExpense(null);
               setIsAddExpenseOpen(true);
             }}
-            onOpenMessTab={() => setActiveTab('mess')}
-            onOpenSettleTab={() => setActiveTab('balances')}
-            onOpenCleaningTab={() => setActiveTab('cleaning')}
+            onOpenMessTab={() => handleTabChange('mess')}
+            onOpenSettleTab={() => handleTabChange('balances')}
+            onOpenCleaningTab={() => handleTabChange('cleaning')}
             onUpdateDailyMeal={handleUpdateDailyMeal}
             onCompleteCleaning={handleUpdateCleaningSchedule}
           />
@@ -1540,6 +1777,7 @@ export default function App() {
             onUpdatePresetRent={handleUpdatePresetRent}
             onUpdateMemberCredentials={handleUpdateMemberCredentials}
             onUpdateMemberAvatar={handleUpdateMemberAvatar}
+            onUpdateMemberExpenseToggles={handleUpdateMemberExpenseToggles}
           />
         )}
 
@@ -1549,31 +1787,31 @@ export default function App() {
       <footer className="hidden sm:flex px-8 py-4 bg-slate-950 border-t border-white/5 items-center justify-between text-[11px] text-slate-500 mt-12">
         <div className="flex gap-6">
           <span 
-            onClick={() => setActiveTab('expenses')} 
+            onClick={() => handleTabChange('expenses')} 
             className={`cursor-pointer transition-colors ${activeTab === 'expenses' ? 'text-white border-b border-indigo-500 pb-0.5' : 'hover:text-slate-300'}`}
           >
             PURCHASES
           </span>
           <span 
-            onClick={() => setActiveTab('mess')} 
+            onClick={() => handleTabChange('mess')} 
             className={`cursor-pointer transition-colors ${activeTab === 'mess' ? 'text-white border-b border-indigo-500 pb-0.5' : 'hover:text-slate-300'}`}
           >
             MESS & RENT
           </span>
           <span 
-            onClick={() => setActiveTab('cleaning')} 
+            onClick={() => handleTabChange('cleaning')} 
             className={`cursor-pointer transition-colors ${activeTab === 'cleaning' ? 'text-white border-b border-indigo-500 pb-0.5' : 'hover:text-slate-300'}`}
           >
             CLEANING ROTA
           </span>
           <span 
-            onClick={() => setActiveTab('balances')} 
+            onClick={() => handleTabChange('balances')} 
             className={`cursor-pointer transition-colors ${activeTab === 'balances' ? 'text-white border-b border-indigo-500 pb-0.5' : 'hover:text-slate-300'}`}
           >
             DEBT SETTLE
           </span>
           <span 
-            onClick={() => setActiveTab('summary')} 
+            onClick={() => handleTabChange('summary')} 
             className={`cursor-pointer transition-colors ${activeTab === 'summary' ? 'text-white border-b border-indigo-500 pb-0.5' : 'hover:text-slate-300'}`}
           >
             PDF & WHATSAPP
@@ -1601,7 +1839,7 @@ export default function App() {
         
         {/* 1. My Dues / Overview */}
         <button
-          onClick={() => setActiveTab('overview')}
+          onClick={() => handleTabChange('overview')}
           className={`flex-1 flex flex-col items-center justify-center py-1 rounded-xl transition-all min-h-[46px] ${
             activeTab === 'overview' ? 'text-indigo-400 font-semibold' : 'text-slate-500 hover:text-slate-300 font-medium'
           }`}
@@ -1614,7 +1852,7 @@ export default function App() {
 
         {/* 2. Mess & Rent */}
         <button
-          onClick={() => setActiveTab('mess')}
+          onClick={() => handleTabChange('mess')}
           className={`flex-1 flex flex-col items-center justify-center py-1 rounded-xl transition-all min-h-[46px] ${
             activeTab === 'mess' ? 'text-indigo-400 font-semibold' : 'text-slate-500 hover:text-slate-300 font-medium'
           }`}
@@ -1641,7 +1879,7 @@ export default function App() {
 
         {/* 3. Room Purchases */}
         <button
-          onClick={() => setActiveTab('expenses')}
+          onClick={() => handleTabChange('expenses')}
           className={`flex-1 flex flex-col items-center justify-center py-1 rounded-xl transition-all min-h-[46px] ${
             activeTab === 'expenses' ? 'text-indigo-400 font-semibold' : 'text-slate-500 hover:text-slate-300 font-medium'
           }`}
@@ -1655,7 +1893,7 @@ export default function App() {
         {/* 4. Super Admin / Admin OR Reports */}
         {(activeMember.role === 'super_admin' || activeMember.role === 'admin') ? (
           <button
-            onClick={() => setActiveTab('super_admin')}
+            onClick={() => handleTabChange('super_admin')}
             className={`flex-1 flex flex-col items-center justify-center py-1 rounded-xl transition-all min-h-[46px] ${
               activeTab === 'super_admin' ? 'text-amber-400 font-bold' : 'text-slate-500 hover:text-amber-300 font-medium'
             }`}
@@ -1673,7 +1911,7 @@ export default function App() {
           </button>
         ) : (
           <button
-            onClick={() => setActiveTab('summary')}
+            onClick={() => handleTabChange('summary')}
             className={`flex-1 flex flex-col items-center justify-center py-1 rounded-xl transition-all min-h-[46px] ${
               activeTab === 'summary' ? 'text-indigo-400 font-semibold' : 'text-slate-500 hover:text-slate-300 font-medium'
             }`}

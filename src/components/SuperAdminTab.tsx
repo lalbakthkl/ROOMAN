@@ -37,7 +37,11 @@ import {
   Home,
   CheckCircle2,
   PlusCircle,
-  Camera
+  Camera,
+  Zap,
+  SlidersHorizontal,
+  ToggleLeft,
+  ToggleRight
 } from 'lucide-react';
 import { Member, Role, MemberPermissions, AuditLog, MembershipType, RoomSettings, Expense } from '../types';
 import { DEFAULT_PERMISSIONS } from '../lib/storage';
@@ -89,6 +93,10 @@ interface SuperAdminTabProps {
     }
   ) => void;
   onBulkUpdateParticipation?: (allOnVacation: boolean, reason?: string) => void;
+  onUpdateMemberExpenseToggles?: (
+    memberId: string,
+    toggles: { enableMess?: boolean; enableRent?: boolean; enableOther?: boolean }
+  ) => void;
 }
 
 export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
@@ -113,6 +121,7 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
   onUpdateMemberAvatar,
   onUpdateMemberParticipation,
   onBulkUpdateParticipation,
+  onUpdateMemberExpenseToggles,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'members' | 'add_expense' | 'rent' | 'vacation' | 'add_member' | 'audit'>('members');
   const [selectedMemberForPerms, setSelectedMemberForPerms] = useState<string | null>(null);
@@ -120,6 +129,7 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
   const [copiedMemberId, setCopiedMemberId] = useState<string | null>(null);
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
   const [editingAvatarMember, setEditingAvatarMember] = useState<Member | null>(null);
+  const [memberToDelete, setMemberToDelete] = useState<Member | null>(null);
 
   // Edit Credentials Modal State
   const [editCredentialsMember, setEditCredentialsMember] = useState<Member | null>(null);
@@ -709,9 +719,24 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
       {activeSubTab === 'members' && (
         <div className="space-y-3">
           
-          <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-            <span>Room Code: <strong className="text-white font-mono">{settings.roomCode}</strong></span>
-            <span>Click WhatsApp icon to send login details directly to roommate</span>
+          {/* Top Summary & Room Info */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 bg-slate-900 border border-white/10 rounded-2xl text-xs text-slate-400">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span>Room Code: <strong className="text-white font-mono">{settings.roomCode}</strong></span>
+              <span>•</span>
+              <span>Total: <strong className="text-white">{members.length} roommates</strong></span>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+              <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                Mess Active: {members.filter(m => (m.enableMess !== undefined ? m.enableMess : (m.isMessActive !== false && m.membershipType !== 'rent_only'))).length}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                Rent Active: {members.filter(m => (m.enableRent !== undefined ? m.enableRent : (m.membershipType !== 'mess_only'))).length}
+              </span>
+              <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                Other Bills Active: {members.filter(m => (m.enableOther !== undefined ? m.enableOther : true)).length}
+              </span>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-3">
@@ -724,6 +749,17 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
               const pass = member.allocatedPassword || member.password || 'password123';
               const isPassRevealed = revealedPasswords[member.id];
               const isOnVacation = !!member.isOnVacation;
+
+              // Expense Toggles State
+              const isMessEnabled = member.enableMess !== undefined 
+                ? member.enableMess 
+                : (member.isMessActive !== false && member.membershipType !== 'rent_only');
+              const isRentEnabled = member.enableRent !== undefined 
+                ? member.enableRent 
+                : (member.membershipType !== 'mess_only');
+              const isOtherEnabled = member.enableOther !== undefined 
+                ? member.enableOther 
+                : true;
 
               return (
                 <div 
@@ -938,21 +974,6 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
                         </div>
                       )}
 
-                      {/* Remove Roommate Button (Super Admin & Admin can remove) */}
-                      {!isSuper && (
-                        <button
-                          onClick={() => {
-                            if (window.confirm(`Are you sure you want to permanently remove "${member.name}" from this room? Their cleaning rota assignment and access credentials will be revoked.`)) {
-                              onRemoveMember(member.id);
-                            }
-                          }}
-                          className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 transition-colors cursor-pointer"
-                          title="Remove Roommate"
-                        >
-                          <UserX className="w-4 h-4" />
-                        </button>
-                      )}
-
                       {/* Permissions Matrix Toggle */}
                       <button
                         onClick={() => setSelectedMemberForPerms(selectedMemberForPerms === member.id ? null : member.id)}
@@ -962,8 +983,144 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
                         <KeyRound className="w-4 h-4 text-slate-400" />
                       </button>
 
+                      {/* Delete Member Button (Super Admin & Admin can delete with confirmation modal) */}
+                      {!isSuper && (
+                        <button
+                          type="button"
+                          onClick={() => setMemberToDelete(member)}
+                          className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+                          title="Delete Member"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Delete</span>
+                        </button>
+                      )}
+
                     </div>
 
+                  </div>
+
+                  {/* Individual Member Custom Expense Enable/Disable Toggles */}
+                  <div className="mt-3 pt-3 border-t border-white/5">
+                    <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-slate-300">
+                        <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>Billing Inclusions for {member.name.split(' ')[0]}:</span>
+                      </div>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        Live calculation filters • Supabase synced
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {/* Rent Share Toggle */}
+                      <button
+                        type="button"
+                        onClick={() => onUpdateMemberExpenseToggles && onUpdateMemberExpenseToggles(member.id, { enableRent: !isRentEnabled })}
+                        className={`p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                          isRentEnabled
+                            ? 'bg-indigo-600/15 border-indigo-500/40 text-white shadow-sm'
+                            : 'bg-slate-950/60 border-white/5 text-slate-400 hover:border-white/15'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                            isRentEnabled ? 'bg-indigo-500/20 text-indigo-300' : 'bg-white/5 text-slate-500'
+                          }`}>
+                            <Home className="w-3.5 h-3.5" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold">Room Rent</div>
+                            <div className="text-[10px] font-mono text-slate-400">
+                              {isRentEnabled ? 'Split equally' : 'Excluded (₹0)'}
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          {isRentEnabled ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                              ON
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/5 text-slate-500 border border-white/10">
+                              OFF
+                            </span>
+                          )}
+                        </div>
+                      </button>
+
+                      {/* Mess Expense Toggle */}
+                      <button
+                        type="button"
+                        onClick={() => onUpdateMemberExpenseToggles && onUpdateMemberExpenseToggles(member.id, { enableMess: !isMessEnabled })}
+                        className={`p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                          isMessEnabled
+                            ? 'bg-emerald-600/15 border-emerald-500/40 text-white shadow-sm'
+                            : 'bg-slate-950/60 border-white/5 text-slate-400 hover:border-white/15'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                            isMessEnabled ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/5 text-slate-500'
+                          }`}>
+                            <Utensils className="w-3.5 h-3.5" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold">Mess / Food</div>
+                            <div className="text-[10px] font-mono text-slate-400">
+                              {isMessEnabled ? `${memDays} days stayed` : 'Excluded (₹0)'}
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          {isMessEnabled ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                              ON
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/5 text-slate-500 border border-white/10">
+                              OFF
+                            </span>
+                          )}
+                        </div>
+                      </button>
+
+                      {/* Other Bills Toggle */}
+                      <button
+                        type="button"
+                        onClick={() => onUpdateMemberExpenseToggles && onUpdateMemberExpenseToggles(member.id, { enableOther: !isOtherEnabled })}
+                        className={`p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                          isOtherEnabled
+                            ? 'bg-amber-600/15 border-amber-500/40 text-white shadow-sm'
+                            : 'bg-slate-950/60 border-white/5 text-slate-400 hover:border-white/15'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                            isOtherEnabled ? 'bg-amber-500/20 text-amber-300' : 'bg-white/5 text-slate-500'
+                          }`}>
+                            <Zap className="w-3.5 h-3.5" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold">Other Bills</div>
+                            <div className="text-[10px] font-mono text-slate-400">
+                              {isOtherEnabled ? 'Power, wifi, misc' : 'Excluded (₹0)'}
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          {isOtherEnabled ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-black font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              ON
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/5 text-slate-500 border border-white/10">
+                              OFF
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Expanded Permissions Matrix */}
@@ -1174,14 +1331,23 @@ export const SuperAdminTab: React.FC<SuperAdminTabProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Allocated Username *</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-slate-300">Allocated Username *</label>
+                  {newUsername && members.some(m => (m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, '')).toLowerCase() === newUsername.trim().toLowerCase()) && (
+                    <span className="text-[10px] text-rose-400 font-medium">Username already taken in room</span>
+                  )}
+                </div>
                 <input
                   type="text"
                   required
                   placeholder="e.g. jordan"
                   value={newUsername}
-                  onChange={(e) => setNewUsername(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white font-mono focus:border-amber-500 focus:outline-none"
+                  onChange={(e) => setNewUsername(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, ''))}
+                  className={`w-full bg-slate-950 border rounded-xl px-3.5 py-2.5 text-xs text-white font-mono focus:outline-none ${
+                    newUsername && members.some(m => (m.username || m.name.toLowerCase().replace(/[^a-z0-9]/g, '')).toLowerCase() === newUsername.trim().toLowerCase())
+                      ? 'border-rose-500/80 focus:border-rose-500'
+                      : 'border-white/10 focus:border-amber-500'
+                  }`}
                 />
               </div>
 

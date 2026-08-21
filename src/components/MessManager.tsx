@@ -301,12 +301,13 @@ export const MessManager: React.FC<MessManagerProps> = ({
           </div>
         </div>
 
-        {/* Active Member's Total Payable: Rent Share + Mess Bill */}
+        {/* Active Member's Total Payable: Rent Share + Mess Bill - Purchases */}
         {(() => {
-          const breakdown = calculateMemberPayableBreakdown(activeMember.id, members, expenses, settings);
-          const myMessBill = breakdown.messCost;
+          const breakdown = calculateMemberPayableBreakdown(activeMember.id, members, expenses, [], settings.daysInMonth, settings);
+          const myMessBill = breakdown.messBill;
           const myRentShare = breakdown.rentShare;
-          const myTotalPayable = breakdown.totalPayable;
+          const myPurchases = breakdown.memberPurchases;
+          const myPayable = breakdown.netPayableAmount;
 
           return (
             <div className="p-5 bg-gradient-to-br from-amber-950/30 via-slate-900 to-indigo-950/30 border border-amber-500/40 rounded-2xl space-y-1 shadow-lg">
@@ -315,10 +316,10 @@ export const MessManager: React.FC<MessManagerProps> = ({
                 <Wallet className="w-4 h-4 text-amber-400" />
               </div>
               <div className="text-2xl font-black text-amber-400 font-mono">
-                {settings.currencySymbol}{myTotalPayable.toFixed(2)}
+                {settings.currencySymbol}{myPayable.toFixed(2)}
               </div>
               <div className="text-[11px] text-slate-300 font-mono">
-                Rent ({settings.currencySymbol}{myRentShare.toFixed(0)}) + Mess ({settings.currencySymbol}{myMessBill.toFixed(0)})
+                Rent ({settings.currencySymbol}{myRentShare.toFixed(0)}) + Mess ({settings.currencySymbol}{myMessBill.toFixed(0)}) - Paid ({settings.currencySymbol}{myPurchases.toFixed(0)})
               </div>
             </div>
           );
@@ -543,16 +544,17 @@ export const MessManager: React.FC<MessManagerProps> = ({
                 const isMessOnly = memType === 'mess_only';
                 const isOnVacation = !!member.isOnVacation;
 
-                const payableBreakdown = calculateMemberPayableBreakdown(member.id, members, expenses, settings);
+                const payableBreakdown = calculateMemberPayableBreakdown(member.id, members, expenses, [], settings.daysInMonth, settings);
                 const dayInfo = metrics.memberDaysBreakdown[member.id] || {
                   daysStayed: member.daysStayedInMonth ?? daysInMonth,
-                  cost: payableBreakdown.messCost,
+                  cost: payableBreakdown.messBill,
                   formula: '',
                 };
 
-                const calculatedMessBill = payableBreakdown.messCost;
+                const calculatedMessBill = payableBreakdown.messBill;
                 const calculatedRentShare = payableBreakdown.rentShare;
-                const totalPayable = payableBreakdown.totalPayable;
+                const memberPaid = payableBreakdown.memberPurchases;
+                const totalPayable = payableBreakdown.netPayableAmount;
 
                 return (
                   <div 
@@ -602,15 +604,19 @@ export const MessManager: React.FC<MessManagerProps> = ({
                       </div>
                     </div>
 
-                    {/* Rent & Mess Split Breakdown Pill */}
-                    <div className="grid grid-cols-2 gap-2 text-xs font-mono bg-slate-950 p-2 rounded-xl border border-white/5">
+                    {/* Rent & Mess & Paid Purchases Split Breakdown */}
+                    <div className="grid grid-cols-3 gap-1.5 text-xs font-mono bg-slate-950 p-2 rounded-xl border border-white/5">
                       <div className="text-left">
-                        <span className="text-slate-400 text-[10px] block">Rent Share:</span>
+                        <span className="text-slate-400 text-[10px] block">Rent:</span>
                         <strong className="text-indigo-300">{settings.currencySymbol}{calculatedRentShare.toFixed(2)}</strong>
                       </div>
-                      <div className="text-right">
-                        <span className="text-slate-400 text-[10px] block">Mess Bill:</span>
+                      <div className="text-center">
+                        <span className="text-slate-400 text-[10px] block">Mess:</span>
                         <strong className="text-emerald-400">{settings.currencySymbol}{calculatedMessBill.toFixed(2)}</strong>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-slate-400 text-[10px] block">Paid:</span>
+                        <strong className="text-amber-400">{settings.currencySymbol}{memberPaid.toFixed(2)}</strong>
                       </div>
                     </div>
 

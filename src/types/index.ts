@@ -30,6 +30,9 @@ export interface Member {
   daysStayed?: number; // Number of days stayed in month for mess bill calculation
   daysStayedInMonth?: number; // Alias for daysStayed
   membershipType?: MembershipType; // 'both' | 'rent_only' | 'mess_only'
+  enableMess?: boolean; // Toggle for mess expense participation (default: true)
+  enableRent?: boolean; // Toggle for rent expense participation (default: true)
+  enableOther?: boolean; // Toggle for other shared expenses participation (default: true)
   customRentShare?: number; // Optional manual custom rent override set by admin (e.g. ₹5,000 for master room)
   rentShareOverride?: boolean; // True if customRentShare should be used instead of equal split
   upiId?: string;
@@ -215,6 +218,18 @@ export interface AuthUser {
   role: Role;
   memberId: string;
   roomCode: string;
+}
+
+export interface MemberSession {
+  role: Role;
+  roomId: string;
+  roomCode: string;
+  memberId: string;
+  username: string;
+  name: string;
+  email?: string;
+  avatar?: string;
+  loginTimestamp: number;
 }
 
 export interface RoomData {
